@@ -57,4 +57,24 @@ class OptionsTest {
         assertThrows(IllegalArgumentException.class, () -> Options.parse(new String[]{"--peer", "[::1"}));
         assertThrows(IllegalArgumentException.class, () -> Options.parse(new String[]{"--peer", "1.2.3.4:x"}));
     }
+
+    @Test
+    void desktopModesUseTheirOwnDefaultPort() {
+        Options o = Options.parse(new String[]{"--desktop", "host", "--peer", "203.0.113.7", "--key", "k", "--view-only"});
+        assertEquals("host", o.desktop);
+        assertTrue(o.viewOnly);
+        assertEquals(Options.DESKTOP_PORT, o.peerPort);
+        assertEquals(Options.DESKTOP_PORT, o.localPort);
+
+        o = Options.parse(new String[]{"--desktop", "view", "--peer", "203.0.113.7:9000", "--port", "9001"});
+        assertEquals("view", o.desktop);
+        assertEquals(9000, o.peerPort);
+        assertEquals(9001, o.localPort);
+
+        o = Options.parse(new String[]{"--desktop", "--peer-port", "9002"});
+        assertEquals("", o.desktop, "bare --desktop opens the launcher");
+        assertEquals(9002, o.peerPort);
+        assertEquals(Options.DESKTOP_PORT, o.localPort);
+        assertNull(Options.parse(new String[0]).desktop);
+    }
 }
