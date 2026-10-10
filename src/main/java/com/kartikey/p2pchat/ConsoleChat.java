@@ -5,7 +5,11 @@ import java.io.InputStreamReader;
 import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** Terminal chat: each line typed is sent; "/quit" exits. */
 public final class ConsoleChat {
@@ -18,30 +22,38 @@ public final class ConsoleChat {
             System.err.println(Options.usage());
             return 2;
         }
+        Map<Long, String> sent = new ConcurrentHashMap<>();
         PeerLink.Listener listener = new PeerLink.Listener() {
             @Override
             public void onStatus(PeerLink.Status status, String detail) {
-                System.out.println("* " + status + ": " + detail);
+                print("* " + status + ": " + detail);
             }
 
             @Override
             public void onMessage(String text) {
-                System.out.println("peer> " + text);
+                print("peer> " + text);
+            }
+
+            @Override
+            public void onDelivered(long id) {
+                String text = sent.remove(id);
+                print("* delivered \u2713 " + (text == null ? "#" + id : text));
             }
 
             @Override
             public void onFailed(long id, String text) {
-                System.out.println("* not delivered: " + text);
+                sent.remove(id);
+                print("* not delivered: " + text);
             }
 
             @Override
             public void onWarning(String warning) {
-                System.out.println("! " + warning);
+                print("! " + warning);
             }
 
             @Override
             public void onNatReport(StunClient.Report report) {
-                System.out.println("* " + report.summary());
+                print("* " + report.summary());
             }
         };
 
@@ -55,7 +67,7 @@ public final class ConsoleChat {
             return 1;
         }
         try (link) {
-            System.out.println("* listening on UDP " + link.localPort() + (link.isEncrypted()
+            print("* listening on UDP " + link.localPort() + (link.isEncrypted()
                     ? ", encrypted" : ", NOT encrypted (use --key)") + ". Type messages, /quit to exit.");
             link.start();
             BufferedReader in = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
@@ -68,13 +80,20 @@ public final class ConsoleChat {
                     continue;
                 }
                 try {
-                    link.send(line);
+                    sent.put(link.send(line), line);
                 } catch (IllegalArgumentException e) {
-                    System.out.println("! " + e.getMessage());
+                    print("! " + e.getMessage());
                 }
             }
         }
         return 0;
+    }
+
+    private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss");
+
+    /** Prints a line prefixed with the local time, so logs from two machines can be compared. */
+    private static void print(String line) {
+        System.out.println("[" + LocalTime.now().format(TIME) + "] " + line);
     }
 
     /** Prints this device's public IPv4/IPv6 address as seen from the internet. */

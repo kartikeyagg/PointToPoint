@@ -53,7 +53,10 @@ public final class PeerLink implements AutoCloseable {
     static final long PING_INTERVAL_MS = 5_000;
     static final long PEER_TIMEOUT_MS = 20_000;
     static final long RETRANSMIT_INTERVAL_MS = 1_000;
+    /** Retransmissions allowed once connected (about 30 s). */
     static final int MAX_ATTEMPTS = 30;
+    /** Messages typed before the peer is reachable wait this long for a connection. */
+    static final long MAX_QUEUE_MS = 5 * 60_000;
     private static final int SEEN_WINDOW = 2048;
 
     private final DatagramSocket socket;
@@ -83,6 +86,8 @@ public final class PeerLink implements AutoCloseable {
         final String text;
         volatile int attempts;
         volatile long lastSentAt;
+
+        final long createdAt = System.currentTimeMillis();
 
         Pending(Packet packet, String text) {
             this.packet = packet;
@@ -194,7 +199,7 @@ public final class PeerLink implements AutoCloseable {
                 if (now - p.lastSentAt < RETRANSMIT_INTERVAL_MS) {
                     continue;
                 }
-                if (p.attempts >= MAX_ATTEMPTS) {
+                if (p.attempts >= MAX_ATTEMPTS || now - p.createdAt > MAX_QUEUE_MS) {
                     it.remove();
                     listener.onFailed(p.packet.seq(), p.text);
                 } else {
@@ -208,7 +213,11 @@ public final class PeerLink implements AutoCloseable {
     }
 
     private void transmit(Pending p) {
-        p.attempts++;
+        // Only count tries while connected: messages typed during hole punching must not
+        // use up their retry budget before the path even exists.
+        if (status == Status.CONNECTED) {
+            p.attempts++;
+        }
         p.lastSentAt = System.currentTimeMillis();
         sendRaw(p.packet);
     }

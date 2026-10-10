@@ -65,7 +65,8 @@ Fixes when it doesn't connect:
 1. **Use IPv6.** Most phones on mobile data and many home ISPs have it. Run `--whoami` on both sides.
 2. **Port forwarding.** On one router, forward UDP `7283` to that device's LAN IP.
    That device becomes directly reachable at `<public-ip>:7283`, and the other side can be behind any NAT.
-3. If a port is busy, use different ports: `--port` sets your side and the peer uses your `--whoami` result.
+3. **Windows:** allow Java when Windows Defender Firewall asks. Inbound packets are blocked until then.
+4. If a port is busy, use different ports: `--port` sets your side and the peer uses your `--whoami` result.
 
 ## How it works without a chat server
 
