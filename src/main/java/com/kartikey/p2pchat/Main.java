@@ -20,6 +20,9 @@ public final class Main {
             System.out.println(Options.usage());
             return;
         }
+        if (o.whoami) {
+            System.exit(ConsoleChat.whoami(o.localPort));
+        }
         if (o.cli || GraphicsEnvironment.isHeadless()) {
             System.exit(ConsoleChat.run(o));
         } else {

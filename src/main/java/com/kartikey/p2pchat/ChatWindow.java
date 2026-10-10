@@ -4,6 +4,7 @@ import javax.swing.BorderFactory;
 import javax.swing.DefaultListCellRenderer;
 import javax.swing.DefaultListModel;
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JComponent;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
@@ -59,6 +60,8 @@ public final class ChatWindow {
     private final JTextField localPortField = new JTextField(5);
     private final JPasswordField keyField = new JPasswordField(10);
     private final JButton connectButton = new JButton("Connect");
+    private final JButton whoamiButton = new JButton("My public address");
+    private final JCheckBox stunBox = new JCheckBox("STUN lookup", true);
     private final DefaultListModel<Line> lines = new DefaultListModel<>();
     private final JList<Line> list = new JList<>(lines);
     private final JTextField input = new JTextField();
@@ -73,12 +76,15 @@ public final class ChatWindow {
 
     private ChatWindow(Options o) {
         peerField.setText(o.peerHost == null ? "" : o.peerHost);
+        peerField.setToolTipText("1.2.3.4, 1.2.3.4:5000, 2001:db8::1 or [2001:db8::1]:5000");
+        stunBox.setSelected(o.stun);
+        stunBox.setToolTipText("Ask a public STUN server for this device's public address when connecting");
         peerPortField.setText(String.valueOf(o.peerPort));
         localPortField.setText(String.valueOf(o.localPort));
         keyField.setText(o.passphrase == null ? "" : o.passphrase);
 
         JPanel form = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        form.add(new JLabel("Peer IP"));
+        form.add(new JLabel("Peer address"));
         form.add(peerField);
         form.add(new JLabel("Peer port"));
         form.add(peerPortField);
@@ -87,9 +93,11 @@ public final class ChatWindow {
         form.add(new JLabel("Passphrase"));
         form.add(keyField);
         form.add(connectButton);
+        form.add(whoamiButton);
+        form.add(stunBox);
 
-        JLabel hint = new JLabel(" My local IPs: " + String.join(", ", localAddresses())
-                + "  (over the internet give your peer your PUBLIC IP)");
+        JLabel hint = new JLabel(" Local IPs: " + String.join(", ", localAddresses())
+                + "   Press 'My public address' and send the result to your peer.");
         hint.setForeground(Color.GRAY);
 
         JPanel top = new JPanel(new BorderLayout());
@@ -109,7 +117,7 @@ public final class ChatWindow {
         frame.add(top, BorderLayout.NORTH);
         frame.add(scroll, BorderLayout.CENTER);
         frame.add(bottom, BorderLayout.SOUTH);
-        frame.setSize(820, 520);
+        frame.setSize(980, 560);
         frame.setLocationByPlatform(true);
         frame.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
         frame.addWindowListener(new WindowAdapter() {
@@ -127,6 +135,7 @@ public final class ChatWindow {
                 disconnect();
             }
         });
+        whoamiButton.addActionListener(e -> whoami());
         sendButton.addActionListener(e -> send());
         input.addActionListener(e -> send());
         setChatEnabled(false);
@@ -146,8 +155,12 @@ public final class ChatWindow {
             int peerPort = Options.port(peerPortField.getText());
             int localPort = Options.port(localPortField.getText());
             String key = new String(keyField.getPassword());
-            InetSocketAddress peer = new InetSocketAddress(host, peerPort);
-            link = new PeerLink(localPort, peer, new PacketCodec(key), new UiListener());
+            Options parsed = new Options();
+            parsed.peerPort = peerPort;
+            parsed.setPeer(host); // "host:port" in the address field overrides the port field
+            InetSocketAddress peer = new InetSocketAddress(parsed.peerHost, parsed.peerPort);
+            link = new PeerLink(localPort, peer, new PacketCodec(key), new UiListener(),
+                    stunBox.isSelected() ? StunClient.DEFAULT_SERVERS : List.of());
             system("Listening on UDP " + link.localPort() + (link.isEncrypted()
                     ? ", encrypted." : ", NOT encrypted (set a passphrase on both sides)."));
             link.start();
@@ -162,6 +175,43 @@ public final class ChatWindow {
             link = null;
             system("Cannot connect: " + e.getMessage());
         }
+    }
+
+    /** Looks up this device's public IPv4/IPv6 address on the chosen local port. */
+    private void whoami() {
+        if (link != null) {
+            system("Disconnect first (the lookup must use the chat port), or keep 'STUN lookup' ticked when connecting.");
+            return;
+        }
+        int localPort;
+        try {
+            localPort = Options.port(localPortField.getText());
+        } catch (IllegalArgumentException e) {
+            system(e.getMessage());
+            return;
+        }
+        whoamiButton.setEnabled(false);
+        system("Asking STUN servers for this device's public address...");
+        Thread t = new Thread(() -> {
+            String result;
+            try {
+                List<StunClient.Report> r = StunClient.probeBoth(localPort, StunClient.DEFAULT_SERVERS, 1500);
+                result = "IPv4: " + r.get(0).summary() + "\nIPv6: " + r.get(1).summary();
+            } catch (BindException e) {
+                result = "Port " + localPort + " is in use.";
+            } catch (Exception e) {
+                result = "Lookup failed: " + e.getMessage();
+            }
+            String text = result;
+            SwingUtilities.invokeLater(() -> {
+                for (String line : text.split("\n")) {
+                    system(line);
+                }
+                whoamiButton.setEnabled(true);
+            });
+        }, "stun-lookup");
+        t.setDaemon(true);
+        t.start();
     }
 
     private void disconnect() {
@@ -211,7 +261,8 @@ public final class ChatWindow {
     }
 
     private void setFormEnabled(boolean on) {
-        for (JComponent c : List.of(peerField, peerPortField, localPortField, keyField)) {
+        whoamiButton.setEnabled(on);
+        for (JComponent c : List.of(peerField, peerPortField, localPortField, keyField, stunBox)) {
             c.setEnabled(on);
         }
     }
@@ -252,6 +303,11 @@ public final class ChatWindow {
         public void onWarning(String warning) {
             SwingUtilities.invokeLater(() -> system(warning));
         }
+
+        @Override
+        public void onNatReport(StunClient.Report report) {
+            SwingUtilities.invokeLater(() -> system(report.summary()));
+        }
     }
 
     private static final class LineRenderer extends DefaultListCellRenderer {
@@ -288,8 +344,10 @@ public final class ChatWindow {
                     continue;
                 }
                 for (InetAddress a : Collections.list(ni.getInetAddresses())) {
-                    if (a instanceof Inet4Address) {
-                        out.add(a.getHostAddress());
+                    if (a instanceof Inet4Address || !(a.isLinkLocalAddress() || a.isSiteLocalAddress())) {
+                        String h = a.getHostAddress();
+                        int zone = h.indexOf('%');
+                        out.add(zone >= 0 ? h.substring(0, zone) : h);
                     }
                 }
             }

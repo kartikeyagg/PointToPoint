@@ -31,9 +31,30 @@ class OptionsTest {
     }
 
     @Test
+    void peerAcceptsHostPortAndIpv6Forms() {
+        Options o = Options.parse(new String[]{"--peer", "13.71.3.98:48720"});
+        assertEquals("13.71.3.98", o.peerHost);
+        assertEquals(48720, o.peerPort);
+
+        o = Options.parse(new String[]{"--peer", "[2401:4900::1]:9000"});
+        assertEquals("2401:4900::1", o.peerHost);
+        assertEquals(9000, o.peerPort);
+
+        o = Options.parse(new String[]{"--peer", "2401:4900::1"});
+        assertEquals("2401:4900::1", o.peerHost);
+        assertEquals(Options.DEFAULT_PORT, o.peerPort);
+
+        o = Options.parse(new String[]{"--whoami", "--no-stun"});
+        assertTrue(o.whoami);
+        assertFalse(o.stun);
+    }
+
+    @Test
     void rejectsBadInput() {
         assertThrows(IllegalArgumentException.class, () -> Options.parse(new String[]{"--port", "70000"}));
         assertThrows(IllegalArgumentException.class, () -> Options.parse(new String[]{"--peer"}));
         assertThrows(IllegalArgumentException.class, () -> Options.parse(new String[]{"--nope"}));
+        assertThrows(IllegalArgumentException.class, () -> Options.parse(new String[]{"--peer", "[::1"}));
+        assertThrows(IllegalArgumentException.class, () -> Options.parse(new String[]{"--peer", "1.2.3.4:x"}));
     }
 }

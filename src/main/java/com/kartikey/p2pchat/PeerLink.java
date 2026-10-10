@@ -3,10 +3,14 @@ package com.kartikey.p2pchat;
 import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
+import java.net.Inet6Address;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.util.Arrays;
+import java.util.List;
 import java.util.LinkedHashSet;
 import java.util.Iterator;
 import java.util.Map;
@@ -40,6 +44,9 @@ public final class PeerLink implements AutoCloseable {
         default void onFailed(long messageId, String text) {}
 
         default void onWarning(String warning) {}
+
+        /** Result of the optional STUN lookup of our own public address. */
+        default void onNatReport(StunClient.Report report) {}
     }
 
     static final long PUNCH_INTERVAL_MS = 500;
@@ -61,6 +68,7 @@ public final class PeerLink implements AutoCloseable {
         return t;
     });
     private final Thread receiver;
+    private final List<String> stunServers;
 
     private volatile InetSocketAddress peer;
     private volatile Status status = Status.CONNECTING;
@@ -87,6 +95,16 @@ public final class PeerLink implements AutoCloseable {
      */
     public PeerLink(int localPort, InetSocketAddress peer, PacketCodec codec, Listener listener)
             throws SocketException {
+        this(localPort, peer, codec, listener, List.of());
+    }
+
+    /**
+     * Like {@link #PeerLink(int, InetSocketAddress, PacketCodec, Listener)}, but first asks the
+     * given STUN servers (e.g. {@link StunClient#DEFAULT_SERVERS}) for our public address and
+     * reports it via {@link Listener#onNatReport}. An empty list skips the lookup.
+     */
+    public PeerLink(int localPort, InetSocketAddress peer, PacketCodec codec, Listener listener,
+                    List<String> stunServers) throws SocketException {
         if (peer.isUnresolved()) {
             throw new IllegalArgumentException("cannot resolve peer host " + peer.getHostString());
         }
@@ -94,6 +112,7 @@ public final class PeerLink implements AutoCloseable {
         this.peer = peer;
         this.codec = codec;
         this.listener = listener;
+        this.stunServers = List.copyOf(stunServers);
         this.receiver = new Thread(this::receiveLoop, "p2p-receiver");
         this.receiver.setDaemon(true);
     }
@@ -213,13 +232,25 @@ public final class PeerLink implements AutoCloseable {
     // ---- receiving ----------------------------------------------------------------------
 
     private void receiveLoop() {
+        if (!stunServers.isEmpty()) {
+            // Probe from this very socket so the reported mapping is the one the peer must use.
+            // Chat packets arriving meanwhile are dropped; HELLO/MSG are retransmitted anyway.
+            try {
+                boolean ipv6 = peer.getAddress() instanceof Inet6Address;
+                listener.onNatReport(StunClient.probe(socket, stunServers, ipv6, 1500));
+            } catch (IOException | RuntimeException e) {
+                listener.onWarning("public address lookup failed: " + e.getMessage());
+            }
+        }
         byte[] buf = new byte[2048];
         DatagramPacket dp = new DatagramPacket(buf, buf.length);
         while (!socket.isClosed()) {
             try {
                 dp.setLength(buf.length);
                 socket.receive(dp);
-                handle((InetSocketAddress) dp.getSocketAddress(), buf, dp.getLength());
+                if (!StunClient.isStunMessage(buf, dp.getLength())) {
+                    handle((InetSocketAddress) dp.getSocketAddress(), buf, dp.getLength());
+                }
             } catch (IOException e) {
                 if (!socket.isClosed()) {
                     listener.onWarning("receive failed: " + e.getMessage());
@@ -232,7 +263,7 @@ public final class PeerLink implements AutoCloseable {
 
     private void handle(InetSocketAddress from, byte[] data, int length) {
         // Only the configured peer's IP is accepted; its port may differ if its NAT remapped it.
-        if (!from.getAddress().equals(peer.getAddress())) {
+        if (!samePeer(from.getAddress(), peer.getAddress())) {
             return;
         }
         Packet p;
@@ -296,7 +327,21 @@ public final class PeerLink implements AutoCloseable {
         listener.onStatus(next, detail);
     }
 
+    /**
+     * Same host, or for IPv6 the same /64 network: hosts with privacy extensions send from
+     * rotating temporary addresses, so the peer may answer from a sibling of the address we dialled.
+     */
+    static boolean samePeer(InetAddress a, InetAddress b) {
+        if (a.equals(b)) {
+            return true;
+        }
+        if (a instanceof Inet6Address && b instanceof Inet6Address && !a.isLinkLocalAddress()) {
+            return Arrays.equals(Arrays.copyOf(a.getAddress(), 8), Arrays.copyOf(b.getAddress(), 8));
+        }
+        return false;
+    }
+
     private static String describe(InetSocketAddress a) {
-        return a.getAddress().getHostAddress() + ":" + a.getPort();
+        return StunClient.format(a);
     }
 }

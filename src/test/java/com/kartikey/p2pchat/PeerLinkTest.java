@@ -157,6 +157,31 @@ class PeerLinkTest {
     }
 
     @Test
+    void peersConnectOverIpv6Loopback() throws Exception {
+        int pa = freePort(), pb = freePort();
+        Recorder ra = new Recorder(), rb = new Recorder();
+        PacketCodec codec = new PacketCodec("pw");
+        PeerLink a = new PeerLink(pa, new InetSocketAddress("::1", pb), codec, ra);
+        PeerLink b = new PeerLink(pb, new InetSocketAddress("::1", pa), new PacketCodec("pw"), rb);
+        toClose.add(a);
+        toClose.add(b);
+        a.start();
+        b.start();
+        a.send("over v6");
+        assertEquals("over v6", rb.messages.poll(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void ipv6PeersMatchWithinSameSlash64Only() throws Exception {
+        InetAddress dialled = InetAddress.getByName("2401:4900:8845:546f:8140:9d6e:c31a:5f80");
+        InetAddress temporary = InetAddress.getByName("2401:4900:8845:546f:2b1d:b2f9:1cdd:cdc8");
+        InetAddress other = InetAddress.getByName("2401:4900:8845:5470::1");
+        assertTrue(PeerLink.samePeer(temporary, dialled));
+        assertFalse(PeerLink.samePeer(other, dialled));
+        assertFalse(PeerLink.samePeer(InetAddress.getByName("1.2.3.5"), InetAddress.getByName("1.2.3.4")));
+    }
+
+    @Test
     void byeMarksPeerDisconnected() throws Exception {
         int pa = freePort(), pb = freePort();
         Recorder ra = new Recorder(), rb = new Recorder();
