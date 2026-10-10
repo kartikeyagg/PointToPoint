@@ -21,8 +21,8 @@ On **both** devices:
 
 1. Press **My public address** (or run `./run.sh --whoami`). The app prints something like:
    ```
-   IPv4: Your public address is 13.71.3.98:48720. Give it to your peer (ip AND port).
-   IPv6: Your address is [2401:4900:8845:546f:2b1d:b2f9:1cdd:cdc8]:7283 (no NAT). Give it to your peer; ...
+   IPv4: Your public address is 203.0.113.10:48720. Give it to your peer (ip AND port).
+   IPv6: Your address is [2001:db8:8845:546f:2b1d:b2f9:1cdd:cdc8]:7283 (no NAT). Give it to your peer; ...
    ```
 2. Send that **ip:port** to the other person, preferring **IPv6** if both of you have it.
    The port matters: behind most routers your public port is *not* 7283.

@@ -7,18 +7,18 @@ This file records tests over the **real internet**, between machines on differen
 
 | # | Peer A | Peer B | Path | Result |
 |---|---|---|---|---|
-| 1 | Linux PC, Airtel mobile hotspot, IPv6 `2001:4490:…` (no NAT) | Windows 11 PC, Airtel home broadband, IPv6 `2401:4900:…` (no NAT) | **IPv6** | ✅ **Connected, encrypted. Messages delivered both ways**, link held ~3 min on keep-alives |
+| 1 | Linux PC, Airtel mobile hotspot, IPv6 `2001:db8:…` (no NAT) | Windows 11 PC, Airtel home broadband, IPv6 `2001:db8:…` (no NAT) | **IPv6** | ✅ **Connected, encrypted. Messages delivered both ways**, link held ~3 min on keep-alives |
 | 2 | same Linux PC (hotspot), IPv4 symmetric NAT | same Windows PC (home), IPv4 symmetric NAT | IPv4 | ❌ Expected. Both NATs change ports per destination; impossible without a relay |
-| 3 | Linux PC (home broadband), IPv4 symmetric NAT | GitHub Codespace (Azure SE Asia), IPv4 stable mapping `13.71.3.98:48720`, port-restricted | IPv4 | ❌ Expected. One symmetric side plus one port-restricted side cannot meet |
+| 3 | Linux PC (home broadband), IPv4 symmetric NAT | GitHub Codespace (Azure SE Asia), IPv4 stable mapping `203.0.113.10:48720`, port-restricted | IPv4 | ❌ Expected. One symmetric side plus one port-restricted side cannot meet |
 
 What each side's `--whoami` reported:
 
 ```
 Linux PC (hotspot)   IPv4: NAT picks a new public port for every destination (ports 1619/1622)
-                     IPv6: [2001:4490:dc8:4249:fab1:bba4:263c:1b6a]:7283 (no NAT)
+                     IPv6: [2001:db8:dc8:4249:fab1:bba4:263c:1b6a]:7283 (no NAT)
 Windows PC (home)    IPv4: NAT picks a new public port for every destination (ports 29211/16139)
-                     IPv6: [2401:4900:8845:546f:3121:aa0f:974e:e567]:7283 (no NAT)
-Codespace (Azure)    IPv4: 13.71.3.98:48720 (stable)
+                     IPv6: [2001:db8:8845:546f:3121:aa0f:974e:e567]:7283 (no NAT)
+Codespace (Azure)    IPv4: 203.0.113.10:48720 (stable)
                      IPv6: none
 ```
 
@@ -26,7 +26,7 @@ Logs from test 1 (no relays, no tunnels; chat packets went directly between the 
 
 ```
 Linux PC (A)                                              Windows PC (B)
-* CONNECTING: punching towards [2401:4900:…:e567]:7283    * CONNECTING: punching towards [2001:4490:…:1b6a]:7283
+* CONNECTING: punching towards [2001:db8:…:e567]:7283    * CONNECTING: punching towards [2001:db8:…:1b6a]:7283
 * not delivered: hello from PC-A #1   (see fix below)     * not delivered: hello from PC-B #1   (see fix below)
 * CONNECTED: … (encrypted)                                * CONNECTED: … (encrypted)
 peer> hello from PC-B #2                                  peer> hello from PC-A #2

@@ -32,16 +32,16 @@ class OptionsTest {
 
     @Test
     void peerAcceptsHostPortAndIpv6Forms() {
-        Options o = Options.parse(new String[]{"--peer", "13.71.3.98:48720"});
-        assertEquals("13.71.3.98", o.peerHost);
+        Options o = Options.parse(new String[]{"--peer", "203.0.113.10:48720"});
+        assertEquals("203.0.113.10", o.peerHost);
         assertEquals(48720, o.peerPort);
 
-        o = Options.parse(new String[]{"--peer", "[2401:4900::1]:9000"});
-        assertEquals("2401:4900::1", o.peerHost);
+        o = Options.parse(new String[]{"--peer", "[2001:db8::1]:9000"});
+        assertEquals("2001:db8::1", o.peerHost);
         assertEquals(9000, o.peerPort);
 
-        o = Options.parse(new String[]{"--peer", "2401:4900::1"});
-        assertEquals("2401:4900::1", o.peerHost);
+        o = Options.parse(new String[]{"--peer", "2001:db8::1"});
+        assertEquals("2001:db8::1", o.peerHost);
         assertEquals(Options.DEFAULT_PORT, o.peerPort);
 
         o = Options.parse(new String[]{"--whoami", "--no-stun"});
