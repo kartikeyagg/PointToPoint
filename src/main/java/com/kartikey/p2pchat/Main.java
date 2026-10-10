@@ -1,5 +1,7 @@
 package com.kartikey.p2pchat;
 
+import com.kartikey.p2pchat.remote.DesktopApp;
+
 import java.awt.GraphicsEnvironment;
 
 public final class Main {
@@ -22,6 +24,13 @@ public final class Main {
         }
         if (o.whoami) {
             System.exit(ConsoleChat.whoami(o.localPort));
+        }
+        if (o.desktop != null) {
+            int code = DesktopApp.run(o);
+            if (code >= 0) {
+                System.exit(code);
+            }
+            return;
         }
         if (o.cli || GraphicsEnvironment.isHeadless()) {
             System.exit(ConsoleChat.run(o));

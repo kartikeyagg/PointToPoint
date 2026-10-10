@@ -64,3 +64,19 @@ java -jar target/p2p-chat.jar --whoami
 # exchange the IPv6 (preferred) or stable IPv4 address, then start both within ~1 minute:
 java -jar target/p2p-chat.jar --cli --peer '[<their IPv6>]:7283' --key test
 ```
+
+## Remote desktop (2026-10-10, same machine only)
+
+These are not internet tests yet. Host and viewer ran on one Linux PC (X11, 1920×1080) over
+loopback, encrypted, with `--view-only` so the real mouse was not touched:
+
+| Check | Result |
+|---|---|
+| Both windows open, link connects, no errors on stdout/stderr | ✅ |
+| Viewer image vs. a direct screenshot (scaled to 160×90, mean abs grey difference) | ✅ 28.7, against 109.4 for an unrelated image. The viewer window is itself on screen, so they can't match exactly |
+| CPU with the screen changing all the time (the viewer shows itself) | host ≈ 29 %, viewer ≈ 50 % of one core |
+| `--desktop` without peer/key opens the launcher; a headless JVM refuses with a clear error | ✅ |
+
+Input replay over real links is covered by `RemoteDesktopIntegrationTest`: two encrypted
+`PeerLink`s on loopback, a fake screen and a recording input sink. Testing control between two
+machines over the internet is still to do. Use the same address advice as for the chat.

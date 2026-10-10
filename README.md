@@ -7,14 +7,18 @@ Chat packets go **straight from one device to the other**. There is no chat serv
 - UDP hole punching over **IPv4 and IPv6**
 - Optional **public address lookup** (STUN) that tells you the exact ip:port to give your peer
 - Reliable delivery: messages are acknowledged, retransmitted and de-duplicated (✓ when delivered)
-- Optional end-to-end encryption: AES-256-GCM with a key derived from a shared passphrase
+- Optional end-to-end encryption: AES-256-GCM with fresh X25519 keys for every connection, which only
+  someone with the shared passphrase can join
 - Small Swing GUI, plus a terminal mode
+- **Remote desktop** (like AnyDesk, without a server): share your screen, or see and control the
+  other computer. See **[REMOTE_DESKTOP.md](REMOTE_DESKTOP.md)**
 
 ## Quick start
 
 ```bash
 ./run.sh                 # builds on first run, opens the GUI
 ./run.sh --whoami        # terminal only: print this device's public address(es)
+./desktop.sh             # remote desktop launcher (see REMOTE_DESKTOP.md)
 ```
 
 On **both** devices:
@@ -50,6 +54,7 @@ Or run the jar directly with Java 17 or newer: `mvn package && java -jar target/
 | `--whoami` | print this device's public IPv4/IPv6 address and exit | |
 | `--no-stun` | don't look up the public address when connecting | lookup on |
 | `--cli` | terminal instead of GUI | GUI |
+| `--desktop [host\|view]`, `--view-only` | remote desktop, see [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md) | port `7284` |
 
 ## Will it connect? Read your `--whoami` result
 
@@ -96,8 +101,26 @@ ignores duplicates. The sender retransmits every second, for up to 30 s, until i
 Packets from any address other than the peer's are ignored. For IPv6 the peer's whole `/64` is accepted,
 because privacy extensions make hosts send from rotating temporary addresses.
 
-Wire format: `magic "P2" | version | type | session(8) | seq(8) | payload`. With a passphrase,
-the whole frame is sealed with AES-256-GCM (random 12-byte nonce, PBKDF2-SHA256 key, 200k iterations).
+Wire format: `magic "P2" | version 2 | type | session(8) | seq(8) | payload`. Besides chat messages,
+the link carries `DATA` datagrams (may be lost) and a reliable, in-order `RDATA` stream (acknowledged
+with `RACK`), which the remote desktop uses.
+
+**Encryption** (with a passphrase):
+
+1. The passphrase becomes a key via PBKDF2-SHA256 (200k iterations). It only seals the `HELLO`
+   packets (`0xE1 | random nonce | AES-GCM`), so only someone who knows it can take part.
+2. Each `HELLO` carries a fresh **X25519** public key. Both sides derive two session keys from the
+   X25519 secret, one per direction, with HKDF-SHA256 salted by the passphrase key. Recorded traffic
+   stays secret even if the passphrase leaks later, and old packets can't be replayed into a new run.
+3. Every other packet is `0xE2 | counter(8) | AES-256-GCM(frame)`. The counter is the GCM nonce,
+   and a 1024-packet window rejects replays. If the peer restarts, its new keys are adopted only
+   after a packet sealed with them arrives, so a replayed `HELLO` can't break a working session.
+4. **Speed:** because nonces are counters, a background thread computes the AES keystream (the XOR
+   arrays) for the next 128 packets in advance. Sealing a small packet is then just XOR plus the
+   GHASH tag: about 0.13 µs for 40 bytes, against 0.47 µs for the JDK's AES-GCM. For frames
+   above 256 bytes the JDK's AES-NI/CLMUL GCM is faster than GHASH in Java, so those use it.
+   Both give identical bytes (`GcmCipherTest` checks this against the JDK for every length).
+
 A wrong passphrase means packets are dropped and the app shows a warning.
 
 ## Tested over the internet
@@ -114,7 +137,10 @@ JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 mvn test   # codec, crypto, STUN pa
 |---|---|
 | `PeerLink` | socket, hole punching, keep-alive, ACK/retransmit, de-dup, STUN on the chat socket |
 | `StunClient` | public-address lookup (RFC 5389, IPv4 + IPv6) and NAT classification |
-| `PacketCodec` / `Packet` | wire format and optional encryption |
+| `PacketCodec` / `Packet` | wire format, passphrase-sealed handshake packets |
+| `SecureChannel` | X25519 handshake, per-direction session keys, counters, replay window, rekeying |
+| `GcmCipher` / `KeystreamPool` | AES-GCM with precomputed keystreams for small frames |
+| `remote/*` | remote desktop, see [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md) |
 | `ChatWindow` | Swing GUI |
 | `ConsoleChat` | terminal client and `--whoami` |
 | `Options` / `Main` | argument parsing and entry point |
