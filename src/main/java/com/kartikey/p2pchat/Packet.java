@@ -5,8 +5,8 @@ package com.kartikey.p2pchat;
  *
  * @param type    what kind of packet this is
  * @param session random id chosen by the sender at startup (lets the receiver notice restarts)
- * @param seq     sequence number for MSG packets; for ACK it is the seq being acknowledged
- * @param payload UTF-8 text for MSG, empty otherwise
+ * @param seq     sequence number for MSG/RDATA; for ACK/RACK it is the seq being acknowledged
+ * @param payload UTF-8 text for MSG, bytes for DATA/RDATA, our X25519 key for encrypted HELLO
  */
 public record Packet(Type type, long session, long seq, byte[] payload) {
 
@@ -20,7 +20,13 @@ public record Packet(Type type, long session, long seq, byte[] payload) {
         /** Acknowledges a MSG with the same seq. */
         ACK,
         /** Sender is shutting down. */
-        BYE;
+        BYE,
+        /** Application datagram: delivered at most once, may be lost or reordered. */
+        DATA,
+        /** Application data delivered reliably and in order; payload starts with the target session. */
+        RDATA,
+        /** Acknowledges an RDATA with the same seq. */
+        RACK;
 
         static Type fromByte(byte b) {
             Type[] all = values();
