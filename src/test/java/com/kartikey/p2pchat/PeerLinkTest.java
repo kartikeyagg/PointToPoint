@@ -10,11 +10,15 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -37,6 +41,24 @@ class PeerLinkTest {
         final BlockingQueue<Long> delivered = new LinkedBlockingQueue<>();
         final BlockingQueue<PeerLink.Status> statuses = new LinkedBlockingQueue<>();
         final List<String> warnings = new CopyOnWriteArrayList<>();
+        final BlockingQueue<byte[]> data = new LinkedBlockingQueue<>();
+        final BlockingQueue<byte[]> reliable = new LinkedBlockingQueue<>();
+        final AtomicInteger peerSessions = new AtomicInteger();
+
+        @Override
+        public void onData(byte[] d) {
+            data.add(d);
+        }
+
+        @Override
+        public void onReliable(byte[] d) {
+            reliable.add(d);
+        }
+
+        @Override
+        public void onPeerSession() {
+            peerSessions.incrementAndGet();
+        }
 
         @Override
         public void onStatus(PeerLink.Status status, String detail) {
@@ -67,6 +89,21 @@ class PeerLinkTest {
                 }
             }
             return false;
+        }
+    }
+
+    /** Host firewalls (e.g. ufw) sometimes refuse a loopback send with EPERM; try again. */
+    private static void sendWithRetry(DatagramSocket socket, DatagramPacket packet) throws Exception {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                socket.send(packet);
+                return;
+            } catch (java.net.SocketException e) {
+                if (attempt == 20) {
+                    throw e;
+                }
+                Thread.sleep(50);
+            }
         }
     }
 
@@ -138,7 +175,7 @@ class PeerLinkTest {
 
             int acks = 0;
             for (int i = 0; i < 3; i++) {
-                raw.send(new DatagramPacket(msg, msg.length, target));
+                sendWithRetry(raw, new DatagramPacket(msg, msg.length, target));
             }
             byte[] buf = new byte[2048];
             long deadline = System.currentTimeMillis() + 3000;
@@ -173,9 +210,9 @@ class PeerLinkTest {
 
     @Test
     void ipv6PeersMatchWithinSameSlash64Only() throws Exception {
-        InetAddress dialled = InetAddress.getByName("2401:4900:8845:546f:8140:9d6e:c31a:5f80");
-        InetAddress temporary = InetAddress.getByName("2401:4900:8845:546f:2b1d:b2f9:1cdd:cdc8");
-        InetAddress other = InetAddress.getByName("2401:4900:8845:5470::1");
+        InetAddress dialled = InetAddress.getByName("2001:db8:8845:546f:8140:9d6e:c31a:5f80");
+        InetAddress temporary = InetAddress.getByName("2001:db8:8845:546f:2b1d:b2f9:1cdd:cdc8");
+        InetAddress other = InetAddress.getByName("2001:db8:8845:5470::1");
         assertTrue(PeerLink.samePeer(temporary, dialled));
         assertFalse(PeerLink.samePeer(other, dialled));
         assertFalse(PeerLink.samePeer(InetAddress.getByName("1.2.3.5"), InetAddress.getByName("1.2.3.4")));
@@ -191,5 +228,64 @@ class PeerLinkTest {
 
         b.close();
         assertTrue(ra.awaitStatus(PeerLink.Status.DISCONNECTED, 3000));
+    }
+
+    @Test
+    void reliableBytesArriveOnceAndInOrderDespiteLoss() throws Exception {
+        int pa = freePort(), pb = freePort();
+        Recorder ra = new Recorder(), rb = new Recorder();
+        PeerLink a = link(pa, pb, "pw", ra).start();
+        link(pb, pa, "pw", rb).start();
+        assertTrue(ra.awaitStatus(PeerLink.Status.CONNECTED, 5000));
+
+        // lose the first copy of every third RDATA
+        Set<Long> dropped = ConcurrentHashMap.newKeySet();
+        a.dropOutgoing = p -> p.type() == Packet.Type.RDATA && p.seq() % 3 == 0 && dropped.add(p.seq());
+        int n = 200;
+        for (int i = 0; i < n; i++) {
+            assertTrue(a.sendReliable(new byte[]{(byte) i, (byte) (i >> 8)}));
+        }
+        for (int i = 0; i < n; i++) {
+            byte[] got = rb.reliable.poll(5, TimeUnit.SECONDS);
+            assertArrayEquals(new byte[]{(byte) i, (byte) (i >> 8)}, got, "item " + i);
+        }
+        assertNull(rb.reliable.poll(700, TimeUnit.MILLISECONDS), "retransmits must not duplicate");
+        assertFalse(dropped.isEmpty());
+    }
+
+    @Test
+    void datagramsReachThePeerOnceConnected() throws Exception {
+        int pa = freePort(), pb = freePort();
+        Recorder ra = new Recorder(), rb = new Recorder();
+        PeerLink a = link(pa, pb, "pw", ra).start();
+        assertFalse(a.sendData(new byte[]{1}), "nothing is sent before the link is up");
+        link(pb, pa, "pw", rb).start();
+        assertTrue(ra.awaitStatus(PeerLink.Status.CONNECTED, 5000));
+
+        byte[] big = new byte[PacketCodec.MAX_PAYLOAD];
+        big[big.length - 1] = 42;
+        assertTrue(a.sendData(big));
+        assertArrayEquals(big, rb.data.poll(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void encryptedLinkRecoversWhenThePeerRestarts() throws Exception {
+        int pa = freePort(), pb = freePort();
+        Recorder ra = new Recorder(), rb = new Recorder();
+        PeerLink a = link(pa, pb, "pw", ra).start();
+        PeerLink b = link(pb, pa, "pw", rb).start();
+        assertTrue(ra.awaitStatus(PeerLink.Status.CONNECTED, 5000));
+        a.send("before");
+        assertEquals("before", rb.messages.poll(5, TimeUnit.SECONDS));
+
+        b.close(); // new process: new session id and new X25519 key
+        Recorder rb2 = new Recorder();
+        PeerLink b2 = link(pb, pa, "pw", rb2).start();
+        assertTrue(rb2.awaitStatus(PeerLink.Status.CONNECTED, 5000));
+        b2.send("after restart");
+        assertEquals("after restart", ra.messages.poll(5, TimeUnit.SECONDS));
+        a.send("back to you");
+        assertEquals("back to you", rb2.messages.poll(5, TimeUnit.SECONDS));
+        assertTrue(ra.peerSessions.get() >= 2);
     }
 }

@@ -38,11 +38,11 @@ class StunClientTest {
     @Test
     void parsesXorMappedIpv4AndIpv6() throws Exception {
         byte[] tx = StunClient.newTransactionId();
-        InetSocketAddress v4 = new InetSocketAddress(InetAddress.getByName("106.219.163.60"), 27520);
+        InetSocketAddress v4 = new InetSocketAddress(InetAddress.getByName("198.51.100.60"), 27520);
         byte[] r4 = response(tx, v4);
         assertEquals(v4, StunClient.parseResponse(r4, r4.length, tx));
 
-        InetSocketAddress v6 = new InetSocketAddress(InetAddress.getByName("2401:4900:8845:546f::1"), 7283);
+        InetSocketAddress v6 = new InetSocketAddress(InetAddress.getByName("2001:db8:8845:546f::1"), 7283);
         byte[] r6 = response(tx, v6);
         assertEquals(v6, StunClient.parseResponse(r6, r6.length, tx));
     }
@@ -60,7 +60,7 @@ class StunClientTest {
 
     @Test
     void classifiesNatBehaviour() throws Exception {
-        InetAddress pub = InetAddress.getByName("13.71.3.98");
+        InetAddress pub = InetAddress.getByName("203.0.113.10");
         InetSocketAddress a = new InetSocketAddress(pub, 48720);
         assertEquals(StunClient.NatType.STABLE,
                 StunClient.classify(List.of(a, a), new ArrayList<>(), 7283).type());
