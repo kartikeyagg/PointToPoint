@@ -110,3 +110,22 @@ Messages are defined in `remote/RemoteProtocol.java`:
 | `remote/DesktopViewer`, `TileAssembler` | fragment reassembly, version ordering, the viewer's copy of the screen |
 | `remote/ViewerWindow`, `HostWindow`, `DesktopLauncher` | Swing windows |
 | `remote/RemoteProtocol`, `Transport`, `ScreenSource`, `InputSink`, `HostSettings` | shared contracts |
+
+## From an iPad or phone (browser, no Java needed)
+
+Run on the computer to be controlled:
+
+```bash
+./run.sh --web --key "a long passphrase" --web-bind <tailscale-or-lan-address>
+# --web [port] (default 7285), --view-only to watch only
+```
+
+Then open `http://<that address>:7285/` in Safari on the iPad and enter the passphrase.
+One finger: tap = click, drag = drag, hold = right-click. Two fingers: scroll. A trackpad/mouse
+works too. **Keyboard** opens the iPad keyboard; **Right-click** applies to your next tap.
+
+Safety:
+- It listens on `127.0.0.1` only unless you pass `--web-bind`; a passphrase of 6+ characters is required.
+- The page is plain HTTP, so the passphrase and screen are not encrypted on the network. Reach it only
+  over a private network (Tailscale/VPN) or an SSH tunnel, never an open port on the internet.
+- Wrong passphrases are slowed down; on macOS grant Screen Recording and Accessibility to Java.
