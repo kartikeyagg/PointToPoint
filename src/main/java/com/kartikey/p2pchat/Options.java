@@ -1,0 +1,142 @@
+package com.kartikey.p2pchat;
+
+/** Command-line options shared by the GUI and the console client. */
+public final class Options {
+
+    /** Default UDP port used by both peers (7000 + day of year it was introduced). */
+    public static final int DEFAULT_PORT = 7283;
+    /**
+     * Default UDP port of the remote desktop service. The 7000 + day-of-year rule gives 7283 again
+     * (same day), so it takes the next one to let chat and remote desktop run side by side.
+     */
+    public static final int DESKTOP_PORT = DEFAULT_PORT + 1;
+
+    public String peerHost;
+    public int peerPort = DEFAULT_PORT;
+    public int localPort = DEFAULT_PORT;
+    public String passphrase;
+    public boolean cli;
+    public boolean help;
+    /** Look up our public address with STUN when connecting (one-off lookup, no relaying). */
+    public boolean stun = true;
+    /** Only print our public address and exit. */
+    public boolean whoami;
+    /** Remote desktop mode: "host" (share this screen), "view" (control the peer), "" (launcher), null (chat). */
+    public String desktop;
+    /** Host only: the viewer may watch but not control. */
+    public boolean viewOnly;
+
+    public static Options parse(String[] args) {
+        Options o = new Options();
+        boolean peerPortSet = false, localPortSet = false;
+        for (int i = 0; i < args.length; i++) {
+            String a = args[i];
+            switch (a) {
+                case "--cli" -> o.cli = true;
+                case "-h", "--help" -> o.help = true;
+                case "--peer" -> {
+                    int before = o.peerPort;
+                    o.peerPort = -1;
+                    o.setPeer(value(args, ++i, a));
+                    peerPortSet |= o.peerPort != -1;
+                    o.peerPort = o.peerPort == -1 ? before : o.peerPort;
+                }
+                case "--no-stun" -> o.stun = false;
+                case "--whoami" -> o.whoami = true;
+                case "--peer-port" -> {
+                    o.peerPort = port(value(args, ++i, a));
+                    peerPortSet = true;
+                }
+                case "--port" -> {
+                    o.localPort = port(value(args, ++i, a));
+                    localPortSet = true;
+                }
+                case "--desktop" -> {
+                    o.desktop = "";
+                    if (i + 1 < args.length && (args[i + 1].equals("host") || args[i + 1].equals("view"))) {
+                        o.desktop = args[++i];
+                    }
+                }
+                case "--view-only" -> o.viewOnly = true;
+                case "--key" -> o.passphrase = value(args, ++i, a);
+                default -> throw new IllegalArgumentException("unknown option: " + a);
+            }
+        }
+        if (o.desktop != null) {
+            o.peerPort = peerPortSet ? o.peerPort : DESKTOP_PORT;
+            o.localPort = localPortSet ? o.localPort : DESKTOP_PORT;
+        }
+        return o;
+    }
+
+    public static String usage() {
+        return """
+                Usage: java -jar p2p-chat.jar [options]
+
+                  --peer <addr>       the other device's PUBLIC address: 1.2.3.4, 1.2.3.4:5000,
+                                      2001:db8::1 or [2001:db8::1]:5000 (required for --cli)
+                  --peer-port <n>     the other device's public UDP port (default %1$d)
+                  --port <n>          UDP port to listen on here         (default %1$d)
+                  --key <passphrase>  shared secret; enables AES-256-GCM encryption
+                  --whoami            print this device's public address(es) and exit
+                  --no-stun           skip the public-address lookup when connecting
+                  --cli               terminal chat instead of the GUI
+                  -h, --help          show this help
+
+                Remote desktop (needs --key; default port %2$d):
+                  --desktop           open the remote desktop launcher window
+                  --desktop host      share this screen with the peer
+                  --desktop view      view and control the peer's screen
+                  --view-only         (host) let the peer watch but not control
+
+                Run --whoami first on both devices and exchange the printed ip:port.
+                Then start both at roughly the same time, each pointing at the other.
+                """.formatted(DEFAULT_PORT, DESKTOP_PORT);
+    }
+
+    /** Accepts host, host:port, IPv6 literal, or [IPv6]:port. */
+    public void setPeer(String s) {
+        s = s.trim();
+        if (s.startsWith("[")) {
+            int close = s.indexOf(']');
+            if (close < 0) {
+                throw new IllegalArgumentException("missing ] in " + s);
+            }
+            peerHost = s.substring(1, close);
+            String rest = s.substring(close + 1);
+            if (rest.startsWith(":")) {
+                peerPort = port(rest.substring(1));
+            } else if (!rest.isEmpty()) {
+                throw new IllegalArgumentException("bad peer address: " + s);
+            }
+        } else if (s.indexOf(':') >= 0 && s.indexOf(':') == s.lastIndexOf(':')) {
+            peerHost = s.substring(0, s.indexOf(':'));
+            peerPort = port(s.substring(s.indexOf(':') + 1));
+        } else {
+            peerHost = s; // plain host / IPv4, or bare IPv6 literal
+        }
+        if (peerHost.isEmpty()) {
+            throw new IllegalArgumentException("bad peer address: " + s);
+        }
+    }
+
+    private static String value(String[] args, int i, String flag) {
+        if (i >= args.length) {
+            throw new IllegalArgumentException(flag + " needs a value");
+        }
+        return args[i];
+    }
+
+    static int port(String s) {
+        int p;
+        try {
+            p = Integer.parseInt(s.trim());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("not a port number: " + s);
+        }
+        if (p < 0 || p > 65535) {
+            throw new IllegalArgumentException("port out of range: " + p);
+        }
+        return p;
+    }
+}
