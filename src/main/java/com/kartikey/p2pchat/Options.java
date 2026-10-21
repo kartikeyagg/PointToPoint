@@ -10,6 +10,8 @@ public final class Options {
      * (same day), so it takes the next one to let chat and remote desktop run side by side.
      */
     public static final int DESKTOP_PORT = DEFAULT_PORT + 1;
+    /** Default TCP port of the browser page ({@code --web}). */
+    public static final int DEFAULT_WEB_PORT = 7285;
 
     public String peerHost;
     public int peerPort = DEFAULT_PORT;
@@ -25,6 +27,10 @@ public final class Options {
     public String desktop;
     /** Host only: the viewer may watch but not control. */
     public boolean viewOnly;
+    /** Browser access (iPad etc.): TCP port of the web page, or -1 when off. */
+    public int webPort = -1;
+    /** Address the web page listens on; loopback unless the user opts in to more. */
+    public String webBind = "127.0.0.1";
 
     public static Options parse(String[] args) {
         Options o = new Options();
@@ -58,6 +64,13 @@ public final class Options {
                     }
                 }
                 case "--view-only" -> o.viewOnly = true;
+                case "--web" -> {
+                    o.webPort = DEFAULT_WEB_PORT;
+                    if (i + 1 < args.length && args[i + 1].matches("\\d+")) {
+                        o.webPort = port(args[++i]);
+                    }
+                }
+                case "--web-bind" -> o.webBind = value(args, ++i, a);
                 case "--key" -> o.passphrase = value(args, ++i, a);
                 default -> throw new IllegalArgumentException("unknown option: " + a);
             }
@@ -89,9 +102,15 @@ public final class Options {
                   --desktop view      view and control the peer's screen
                   --view-only         (host) let the peer watch but not control
 
+                Browser access (iPad, phone; needs --key, no Java needed on the viewing device):
+                  --web [port]        serve this screen as a web page (default port %3$d)
+                  --web-bind <addr>   address to listen on (default 127.0.0.1; use a Tailscale or
+                                      LAN address, or 0.0.0.0, to reach it from another device)
+                  --view-only         page can watch but not control
+
                 Run --whoami first on both devices and exchange the printed ip:port.
                 Then start both at roughly the same time, each pointing at the other.
-                """.formatted(DEFAULT_PORT, DESKTOP_PORT);
+                """.formatted(DEFAULT_PORT, DESKTOP_PORT, DEFAULT_WEB_PORT);
     }
 
     /** Accepts host, host:port, IPv6 literal, or [IPv6]:port. */
