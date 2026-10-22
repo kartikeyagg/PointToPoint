@@ -79,7 +79,11 @@ full-screen change: 24.0 ms to find, encode and send 131 tiles (220 KB)
 - **capture** is how long `java.awt.Robot` takes to grab the screen. Everything else waits on it.
   On some desktops it takes hundreds of milliseconds, and then that is the frame rate limit.
 - **full-screen change** is the host's own work for a dragged window or a scrolled page.
-- If both are small but the picture still lags, the network is dropping tiles: lower `--max-rate`.
+- Start the viewer with `P2P_STATS=1 ./desktop.sh view …` to print, every second, what arrives
+  (KB/s, tiles drawn) and how many tiles stayed incomplete because a datagram was lost.
+- If both are small but tiles keep arriving incomplete, the network is dropping datagrams: lower
+  `--max-rate`. On Linux, `sudo sysctl -w net.core.rmem_max=8388608` also lets the app use its full
+  4 MB receive buffer (the default limit is about 200 KB).
 
 ## Safety
 
