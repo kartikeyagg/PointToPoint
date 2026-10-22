@@ -26,6 +26,9 @@ public final class DesktopApp {
             System.err.println("error: remote desktop needs a graphical session (no display found)");
             return 2;
         }
+        if ("bench".equals(o.desktop)) {
+            return DesktopBench.run(o);
+        }
         boolean ready = !o.desktop.isEmpty() && o.peerHost != null && o.passphrase != null && !o.passphrase.isBlank();
         if (!ready) {
             DesktopLauncher.open(o, DesktopApp::start);
@@ -53,13 +56,14 @@ public final class DesktopApp {
         boolean host = "host".equals(o.desktop);
         // grab the screen before opening the port, so a missing display fails cleanly
         RobotScreen screen = host ? new RobotScreen() : null;
+        ScreenSource source = host ? openScreen(o, screen) : null;
         LinkBridge bridge = new LinkBridge();
         InetSocketAddress peer = new InetSocketAddress(o.peerHost, o.peerPort);
         PeerLink link = new PeerLink(o.localPort, peer, new PacketCodec(o.passphrase), bridge,
                 o.stun ? StunClient.DEFAULT_SERVERS : List.of());
         try {
             if (host) {
-                startHost(o, screen, link, bridge, peer);
+                startHost(o, screen, source, link, bridge, peer);
             } else {
                 startViewer(link, bridge, peer);
             }
@@ -70,15 +74,71 @@ public final class DesktopApp {
         link.start();
     }
 
+    /** Frames per second when the native capture helper runs; Robot can't keep up with this. */
+    static final int NATIVE_FPS = 30;
+
+    /**
+     * The fastest screen source available: the native helper on macOS (ScreenCaptureKit),
+     * otherwise {@link java.awt.Robot}. The helper must report the same size as Robot's screen,
+     * because input coordinates are host-frame pixels.
+     */
+    static ScreenSource openScreen(Options o, RobotScreen robot) {
+        java.nio.file.Path helper = o.javaCapture ? null : helperPath();
+        if (helper == null || !java.nio.file.Files.isExecutable(helper)) {
+            return robot;
+        }
+        try {
+            NativeScreen nativeScreen = NativeScreen.start(helper, NATIVE_FPS, robot, 5000);
+            java.awt.Dimension size = nativeScreen.size();
+            java.awt.Rectangle bounds = robot.bounds();
+            if (size.width != bounds.width || size.height != bounds.height) {
+                nativeScreen.close();
+                System.err.println("native capture is " + size.width + "x" + size.height + " but the screen is "
+                        + bounds.width + "x" + bounds.height + "; using Java capture");
+                return robot;
+            }
+            System.out.println("screen capture: native helper (" + helper.getFileName() + ")");
+            return nativeScreen;
+        } catch (java.io.IOException e) {
+            System.err.println("native capture unavailable (" + e.getMessage() + "); using Java capture");
+            return robot;
+        }
+    }
+
+    /** {@code $P2P_SCREENSTREAM}, or {@code screenstream} next to the jar (macOS only). */
+    static java.nio.file.Path helperPath() {
+        String override = System.getenv("P2P_SCREENSTREAM");
+        if (override != null && !override.isBlank()) {
+            return java.nio.file.Path.of(override);
+        }
+        if (!System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("mac")) {
+            return null;
+        }
+        try {
+            java.nio.file.Path jar = java.nio.file.Path.of(
+                    DesktopApp.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+            return jar.resolveSibling("screenstream");
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     static HostSettings hostSettings(Options o) {
+        return hostSettings(o, false);
+    }
+
+    static HostSettings hostSettings(Options o, boolean nativeCapture) {
         HostSettings settings = HostSettings.defaults().withControlAllowed(!o.viewOnly);
+        if (nativeCapture) {
+            settings = settings.withFps(NATIVE_FPS);
+        }
         return o.maxBytesPerSecond > 0 ? settings.withMaxBytesPerSecond(o.maxBytesPerSecond) : settings;
     }
 
-    private static void startHost(Options o, RobotScreen screen, PeerLink link, LinkBridge bridge,
-                                  InetSocketAddress peer) throws Exception {
-        DesktopHost host = new DesktopHost(Transport.of(link), screen, new RobotInput(screen.bounds()),
-                hostSettings(o));
+    private static void startHost(Options o, RobotScreen screen, ScreenSource source, PeerLink link,
+                                  LinkBridge bridge, InetSocketAddress peer) throws Exception {
+        DesktopHost host = new DesktopHost(Transport.of(link), source, new RobotInput(screen.bounds()),
+                hostSettings(o, source instanceof NativeScreen));
         Timer[] stats = new Timer[1];
         Runnable stop = () -> {
             if (stats[0] != null) {
@@ -88,6 +148,8 @@ public final class DesktopApp {
             link.close();
             System.exit(0);
         };
+        Runtime.getRuntime().addShutdownHook(new Thread(
+                () -> System.out.println("remote desktop host exiting"), "host-exit-log"));
         HostWindow window = HostWindow.open(StunClient.format(peer), host.isControlAllowed(),
                 host::setControlAllowed, stop);
         bridge.status = window::setStatus;
@@ -99,8 +161,32 @@ public final class DesktopApp {
         });
     }
 
+    /** Once a second: what arrived, what was drawn, what was lost (P2P_STATS=1). */
+    private static void printStats(DesktopViewer viewer) {
+        DesktopViewer.Stats[] last = {viewer.stats()};
+        Thread thread = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                DesktopViewer.Stats now = viewer.stats(), before = last[0];
+                last[0] = now;
+                long drawn = now.tilesDrawn() - before.tilesDrawn();
+                long lost = now.tilesIncomplete() - before.tilesIncomplete();
+                System.out.printf("%tT stats: %d KB/s, %d fragments/s, %d tiles drawn/s, %d tiles incomplete/s, decode %.2f ms/tile%n",
+                        System.currentTimeMillis(), (now.bytes() - before.bytes()) / 1024,
+                        now.fragments() - before.fragments(), drawn, lost,
+                        drawn == 0 ? 0.0 : (now.decodeNanos() - before.decodeNanos()) / 1e6 / drawn);
+            }
+        }, "viewer-stats");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
     private static void startViewer(PeerLink link, LinkBridge bridge, InetSocketAddress peer) {
-        DesktopViewer viewer = new DesktopViewer(Transport.of(link));
+        DesktopViewer viewer = DesktopViewer.withRenderThread(Transport.of(link));
         ViewerWindow window = ViewerWindow.open(viewer, "Remote desktop - " + StunClient.format(peer), () -> {
             viewer.close();
             link.close();
@@ -108,5 +194,8 @@ public final class DesktopApp {
         });
         bridge.status = window::setStatus;
         bridge.viewer = viewer;
+        if (System.getenv("P2P_STATS") != null) {
+            printStats(viewer);
+        }
     }
 }

@@ -20,6 +20,10 @@ public record HostSettings(int fps, float jpegQuality, int tileSize, int maxByte
     /** 8 MB/s: a whole changed 1080p screen fits in one frame, so moving windows don't arrive in bands. */
     public static final int DEFAULT_MAX_BYTES_PER_SECOND = 8_000_000;
 
+    public HostSettings withFps(int framesPerSecond) {
+        return new HostSettings(framesPerSecond, jpegQuality, tileSize, maxBytesPerSecond, refreshSeconds, controlAllowed);
+    }
+
     public HostSettings withMaxBytesPerSecond(int bytesPerSecond) {
         return new HostSettings(fps, jpegQuality, tileSize, bytesPerSecond, refreshSeconds, controlAllowed);
     }

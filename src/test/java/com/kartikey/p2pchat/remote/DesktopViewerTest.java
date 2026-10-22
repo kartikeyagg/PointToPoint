@@ -78,6 +78,45 @@ class DesktopViewerTest {
         assertEquals(6, transport.messages.size());
     }
 
+    @Test
+    void renderThreadKeepsTheNetworkThreadFreeAndDrawsOnlyTheNewestTile() throws Exception {
+        DesktopViewer viewer = DesktopViewer.withRenderThread(new FakeTransport());
+        java.util.concurrent.CountDownLatch painting = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        viewer.addListener(new DesktopViewer.Listener() {
+            @Override
+            public void tileDrawn(int x, int y, BufferedImage tile) {
+                painting.countDown();
+                try {
+                    release.await(); // a slow paint
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+        viewer.onMessage(RemoteProtocol.encode(new RemoteProtocol.ScreenInfo(32, 32, 32, false)));
+        viewer.onMessage(RemoteProtocol.encode(new RemoteProtocol.Tile(1, 0, 0, 0, 1, jpeg(solid(32, 32, Color.BLACK)))));
+        assertTrue(painting.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        try {
+            long start = System.nanoTime();
+            Color[] colors = {Color.RED, Color.GREEN, Color.BLUE, Color.WHITE};
+            for (int v = 0; v < colors.length; v++) {
+                viewer.onMessage(RemoteProtocol.encode(new RemoteProtocol.Tile(2 + v, 0, 0, 0, 1, jpeg(solid(32, 32, colors[v])))));
+            }
+            assertTrue(System.nanoTime() - start < 2_000_000_000L, "network thread waited for the paint");
+        } finally {
+            release.countDown();
+        }
+        long deadline = System.currentTimeMillis() + 5000;
+        while (viewer.tilesDrawn() < 2 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(5);
+        }
+        Thread.sleep(100);
+        assertEquals(2, viewer.tilesDrawn(), "the first tile, then only the newest of the queued ones");
+        assertTrue(red(viewer.snapshot().getRGB(16, 16)) > 200 && ((viewer.snapshot().getRGB(16, 16) >> 8) & 0xff) > 200);
+        viewer.close();
+    }
+
     private static List<byte[]> tileMessages(int version, int x, int y, byte[] jpeg, int partSize) {
         List<byte[]> result = new ArrayList<>();
         int count = (jpeg.length + partSize - 1) / partSize;

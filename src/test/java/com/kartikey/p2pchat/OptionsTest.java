@@ -31,6 +31,12 @@ class OptionsTest {
     }
 
     @Test
+    void desktopBenchMode() {
+        assertEquals("bench", Options.parse(new String[]{"--desktop", "bench"}).desktop);
+        org.junit.jupiter.api.Assertions.assertTrue(Options.parse(new String[]{"--java-capture"}).javaCapture);
+    }
+
+    @Test
     void maxRateIsInMegabytesPerSecond() {
         assertEquals(0, Options.parse(new String[0]).maxBytesPerSecond);
         assertEquals(2_500_000, Options.parse(new String[]{"--max-rate", "2.5"}).maxBytesPerSecond);

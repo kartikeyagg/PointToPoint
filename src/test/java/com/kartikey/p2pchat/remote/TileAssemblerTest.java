@@ -23,5 +23,6 @@ class TileAssemblerTest {
         assertArrayEquals(new byte[]{3},
                 assembler.add(new RemoteProtocol.Tile(2, 0, 0, 0, 1, new byte[]{3})));
         assertNull(assembler.add(new RemoteProtocol.Tile(1, 0, 0, 1, 2, new byte[]{2})));
+        org.junit.jupiter.api.Assertions.assertEquals(1, assembler.incomplete(), "the version-1 tile never completed");
     }
 }

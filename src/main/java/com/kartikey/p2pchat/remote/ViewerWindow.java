@@ -14,6 +14,7 @@ import java.awt.Rectangle;
 import java.awt.RenderingHints;
 import java.awt.Toolkit;
 import java.awt.event.KeyAdapter;
+import java.awt.image.VolatileImage;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
@@ -35,19 +36,19 @@ public final class ViewerWindow {
         this.onClose = onClose;
         frame = new JFrame(title);
         frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
-        JPanel canvas = new CanvasPanel(viewer);
+        CanvasPanel canvas = new CanvasPanel(viewer);
         canvas.setFocusable(true);
         canvas.setFocusTraversalKeysEnabled(false);
         installInput(canvas, viewer);
         viewer.addListener(new DesktopViewer.Listener() {
             @Override
-            public void frameUpdated() {
-                canvas.repaint();
+            public void tileDrawn(int x, int y, java.awt.image.BufferedImage tile) {
+                canvas.tileDrawn(x, y, tile);
             }
 
             @Override
             public void stateChanged() {
-                canvas.repaint();
+                canvas.remoteChanged(); // the screen size may have changed
             }
         });
 
@@ -221,11 +222,65 @@ public final class ViewerWindow {
                 size.width, size.height);
     }
 
+    /**
+     * Paints the remote screen. A scaled copy is kept in video memory ({@link VolatileImage}):
+     * each new tile is scaled into it once, and a repaint is a plain copy of the changed area.
+     * Scaling the whole screen on every repaint cost ~10 ms of CPU and starved the network thread.
+     */
     private static final class CanvasPanel extends JPanel {
         private final DesktopViewer viewer;
+        private final Object scaledLock = new Object();
+        private VolatileImage scaled;
+        /** Image area (in panel pixels) the scaled copy was made for. */
+        private Rectangle scaledArea;
+        private boolean redrawAll = true;
 
         private CanvasPanel(DesktopViewer viewer) {
             this.viewer = viewer;
+        }
+
+        /** Render thread: scale one tile into the copy, then repaint just that area. */
+        void tileDrawn(int x, int y, java.awt.image.BufferedImage tile) {
+            Rectangle area;
+            Rectangle target;
+            synchronized (scaledLock) {
+                area = scaledArea;
+                if (area == null || scaled == null || redrawAll) {
+                    repaint();
+                    return;
+                }
+                Dimension size = viewer.screenSize();
+                if (size == null || size.width <= 0) {
+                    return;
+                }
+                target = scaledRect(x, y, tile.getWidth(), tile.getHeight(), size, area);
+                if (scaled.validate(getGraphicsConfiguration()) != VolatileImage.IMAGE_OK) {
+                    redrawAll = true;
+                } else {
+                    Graphics2D g = scaled.createGraphics();
+                    g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                    g.drawImage(tile, target.x, target.y, target.width, target.height, null);
+                    g.dispose();
+                }
+            }
+            repaint(area.x + target.x, area.y + target.y, target.width, target.height);
+        }
+
+        /** Remote screen size or state changed: rebuild the scaled copy on the next paint. */
+        void remoteChanged() {
+            synchronized (scaledLock) {
+                redrawAll = true;
+            }
+            repaint();
+        }
+
+        /** Host rectangle mapped into the scaled copy; neighbouring tiles share edges exactly. */
+        private static Rectangle scaledRect(int x, int y, int w, int h, Dimension screen, Rectangle area) {
+            int x1 = (int) Math.round((double) x * area.width / screen.width);
+            int y1 = (int) Math.round((double) y * area.height / screen.height);
+            int x2 = (int) Math.round((double) (x + w) * area.width / screen.width);
+            int y2 = (int) Math.round((double) (y + h) * area.height / screen.height);
+            return new Rectangle(x1, y1, Math.max(1, x2 - x1), Math.max(1, y2 - y1));
         }
 
         @Override
@@ -234,13 +289,55 @@ public final class ViewerWindow {
             Graphics2D g = (Graphics2D) graphics.create();
             g.setColor(java.awt.Color.BLACK);
             g.fillRect(0, 0, getWidth(), getHeight());
-            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
             Dimension size = viewer.screenSize();
             if (size != null) {
                 Rectangle area = imageArea(getWidth(), getHeight(), size.width, size.height);
-                viewer.drawScaled(g, area.x, area.y, area.width, area.height);
+                if (area.width > 0 && area.height > 0 && !paintCopy(g, area)) {
+                    // No video memory copy available: scale directly (slower).
+                    g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                    viewer.drawScaled(g, area.x, area.y, area.width, area.height);
+                }
             }
             g.dispose();
+        }
+
+        private boolean paintCopy(Graphics2D g, Rectangle area) {
+            java.awt.GraphicsConfiguration gc = getGraphicsConfiguration();
+            if (gc == null) {
+                return false;
+            }
+            synchronized (scaledLock) {
+                boolean resized = scaled == null || scaledArea == null
+                        || scaled.getWidth() != area.width || scaled.getHeight() != area.height;
+                if (resized || scaled.validate(gc) == VolatileImage.IMAGE_INCOMPATIBLE) {
+                    if (scaled != null) {
+                        scaled.flush();
+                    }
+                    scaled = createVolatileImage(area.width, area.height);
+                    if (scaled == null) {
+                        return false;
+                    }
+                    redrawAll = true;
+                } else if (scaled.validate(gc) == VolatileImage.IMAGE_RESTORED) {
+                    redrawAll = true;
+                }
+                scaledArea = new Rectangle(area);
+                if (redrawAll) {
+                    Graphics2D vg = scaled.createGraphics();
+                    vg.setColor(java.awt.Color.BLACK);
+                    vg.fillRect(0, 0, area.width, area.height);
+                    vg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                    viewer.drawScaled(vg, 0, 0, area.width, area.height);
+                    vg.dispose();
+                    redrawAll = false;
+                }
+                g.drawImage(scaled, area.x, area.y, null);
+                if (scaled.contentsLost()) {
+                    redrawAll = true;
+                    repaint();
+                }
+            }
+            return true;
         }
     }
 }

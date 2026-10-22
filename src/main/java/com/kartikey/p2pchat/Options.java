@@ -29,6 +29,8 @@ public final class Options {
     public boolean viewOnly;
     /** Remote desktop host upload cap in bytes per second; 0 = the built-in default. */
     public int maxBytesPerSecond;
+    /** Host: use java.awt.Robot even when the native capture helper is available. */
+    public boolean javaCapture;
     /** Browser access (iPad etc.): TCP port of the web page, or -1 when off. */
     public int webPort = -1;
     /** Address the web page listens on; loopback unless the user opts in to more. */
@@ -61,11 +63,13 @@ public final class Options {
                 }
                 case "--desktop" -> {
                     o.desktop = "";
-                    if (i + 1 < args.length && (args[i + 1].equals("host") || args[i + 1].equals("view"))) {
+                    if (i + 1 < args.length && (args[i + 1].equals("host") || args[i + 1].equals("view")
+                            || args[i + 1].equals("bench"))) {
                         o.desktop = args[++i];
                     }
                 }
                 case "--view-only" -> o.viewOnly = true;
+                case "--java-capture" -> o.javaCapture = true;
                 case "--max-rate" -> o.maxBytesPerSecond = rate(value(args, ++i, a));
                 case "--web" -> {
                     o.webPort = DEFAULT_WEB_PORT;
@@ -104,6 +108,8 @@ public final class Options {
                   --desktop host      share this screen with the peer
                   --desktop view      view and control the peer's screen
                   --view-only         (host) let the peer watch but not control
+                  --desktop bench     measure how fast this computer can share its screen
+                  --java-capture      (host, macOS) don't use the native screen capture helper
                   --max-rate <MB/s>   (host) upload cap for screen updates (default 8; lower it,
                                       e.g. 2, on a slow upload to avoid lost tiles)
 
