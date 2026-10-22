@@ -14,7 +14,14 @@ public record HostSettings(int fps, float jpegQuality, int tileSize, int maxByte
                            int refreshSeconds, boolean controlAllowed) {
 
     public static HostSettings defaults() {
-        return new HostSettings(10, 0.7f, 64, 2_000_000, 3, true);
+        return new HostSettings(20, 0.7f, 128, DEFAULT_MAX_BYTES_PER_SECOND, 3, true);
+    }
+
+    /** 8 MB/s: a whole changed 1080p screen fits in one frame, so moving windows don't arrive in bands. */
+    public static final int DEFAULT_MAX_BYTES_PER_SECOND = 8_000_000;
+
+    public HostSettings withMaxBytesPerSecond(int bytesPerSecond) {
+        return new HostSettings(fps, jpegQuality, tileSize, bytesPerSecond, refreshSeconds, controlAllowed);
     }
 
     public HostSettings withControlAllowed(boolean allowed) {

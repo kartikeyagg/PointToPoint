@@ -31,6 +31,16 @@ class OptionsTest {
     }
 
     @Test
+    void maxRateIsInMegabytesPerSecond() {
+        assertEquals(0, Options.parse(new String[0]).maxBytesPerSecond);
+        assertEquals(2_500_000, Options.parse(new String[]{"--max-rate", "2.5"}).maxBytesPerSecond);
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> Options.parse(new String[]{"--max-rate", "0"}));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> Options.parse(new String[]{"--max-rate", "fast"}));
+    }
+
+    @Test
     void peerAcceptsHostPortAndIpv6Forms() {
         Options o = Options.parse(new String[]{"--peer", "203.0.113.10:48720"});
         assertEquals("203.0.113.10", o.peerHost);

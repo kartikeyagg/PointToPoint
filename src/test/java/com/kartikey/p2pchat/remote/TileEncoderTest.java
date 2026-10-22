@@ -24,6 +24,34 @@ class TileEncoderTest {
     }
 
     @Test
+    void parallelEncodingMatchesOneByOneInOrder() {
+        TileEncoder encoder = new TileEncoder(64, .7f);
+        BufferedImage noisy = image(300, 200);
+        for (int y = 0; y < 200; y++) {
+            for (int x = 0; x < 300; x++) {
+                noisy.setRGB(x, y, (x * 7919 + y * 104729) & 0x00ffffff);
+            }
+        }
+        List<TileEncoder.Position> all = encoder.allTiles(noisy);
+        List<byte[]> together = encoder.encodeAll(noisy, all);
+        assertEquals(all.size(), together.size());
+        for (int i = 0; i < all.size(); i++) {
+            assertTrue(java.util.Arrays.equals(encoder.encode(noisy, all.get(i)), together.get(i)), "tile " + i);
+        }
+        encoder.close();
+    }
+
+    @Test
+    void detectsChangesInImagesThatAreNotIntRgb() {
+        TileEncoder encoder = new TileEncoder(128, .7f);
+        BufferedImage bgr = new BufferedImage(300, 130, BufferedImage.TYPE_3BYTE_BGR);
+        assertEquals(6, encoder.changedTiles(bgr).size());
+        assertTrue(encoder.changedTiles(bgr).isEmpty());
+        bgr.setRGB(260, 129, 0x123456);
+        assertEquals(List.of(new TileEncoder.Position(2, 1)), encoder.changedTiles(bgr));
+    }
+
+    @Test
     void splitsLargeJpegIntoDatagramSizedFragments() {
         TileEncoder encoder = new TileEncoder(256, 1f);
         BufferedImage noisy = image(256, 256);

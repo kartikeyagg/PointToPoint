@@ -44,6 +44,7 @@ From the terminal:
 | `--desktop host` | share this screen | |
 | `--desktop view` | watch and control the peer's screen | |
 | `--view-only` | host: the viewer can watch but not control (can be switched on later in the host window) | control allowed |
+| `--max-rate <MB/s>` | host: upload cap for screen updates. Lower it (e.g. `2`) when the host's upload is slow and the picture keeps missing tiles | `8` |
 | `--peer`, `--peer-port`, `--port`, `--key`, `--no-stun` | same as for the chat | ports `7284` |
 
 The remote desktop uses UDP port **7284** by default, so it can run next to the chat (7283).
@@ -62,9 +63,9 @@ Everything in the README's *Will it connect?* section applies here too.
 ## How it works
 
 ```
-host: capture screen (java.awt.Robot) every 100 ms
-      → cut into 64×64 tiles → keep the tiles that changed
-      → JPEG each tile → split into ≤1087-byte fragments → encrypted UDP datagrams
+host: capture screen (java.awt.Robot) up to 20 times a second
+      → cut into 128×128 tiles → keep the tiles that changed
+      → JPEG the changed tiles on all CPU cores → split into ≤1087-byte fragments → encrypted UDP datagrams
 viewer: reassemble fragments → decode → draw into its copy of the screen → paint scaled
 viewer input → MouseMove (datagram) / buttons, wheel, keys (reliable, in order) → host Robot
 ```
@@ -75,8 +76,13 @@ viewer input → MouseMove (datagram) / buttons, wheel, keys (reliable, in order
 - **Input must not be lost**, so clicks, wheel and keys go over the link's reliable channel
   (acknowledged, retransmitted, in order). Pointer moves are datagrams, because only the
   latest position matters.
-- **Bandwidth**: the host sends at most about 2 MB/s of tiles. Changes beyond that are sent in
-  the next frames, so a busy screen gets less smooth but never floods the link.
+- **Bandwidth**: the host sends at most 8 MB/s of tiles by default (`--max-rate`). That fits a whole
+  changed 1080p screen (about 220 KB) in one frame, so a dragged window arrives at once instead of
+  in bands. Changes beyond the cap are sent in the next frames, so a busy screen gets less smooth
+  but never floods the link.
+- **Latency**: input is applied on the network thread as soon as it arrives. It never waits for a
+  capture or encode in progress. On a 1080p screen a full-screen change takes about 25 ms to
+  encode, and the screen capture itself (`java.awt.Robot`) is usually the slowest step.
 - The viewer's coordinates are host-screen pixels. The window letterboxes the image and maps
   clicks back.
 

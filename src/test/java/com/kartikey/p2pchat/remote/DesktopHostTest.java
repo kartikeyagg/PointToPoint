@@ -63,7 +63,45 @@ class DesktopHostTest {
         assertTrue(transport.reliable.stream().anyMatch(m -> m instanceof RemoteProtocol.ControlState));
     }
 
-    private static DesktopHost host(RecordingTransport transport, Source source, RecordingInput input, HostSettings settings) {
+    @Test
+    void inputIsNotHeldUpByASlowCapture() throws Exception {
+        BufferedImage frame = image(64, 64);
+        java.util.concurrent.CountDownLatch capturing = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicBoolean block = new java.util.concurrent.atomic.AtomicBoolean();
+        ScreenSource slow = () -> {
+            if (block.get()) {
+                capturing.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            return frame;
+        };
+        RecordingInput input = new RecordingInput();
+        DesktopHost host = host(new RecordingTransport(), slow, input, new HostSettings(1, .7f, 64, 1_000_000, 99, true));
+        host.step();
+        block.set(true);
+        Thread stepper = new Thread(host::step);
+        stepper.start();
+        assertTrue(capturing.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        try {
+            // The capture thread is stuck inside step(); input must still go through at once.
+            Thread sender = new Thread(() -> host.onMessage(RemoteProtocol.encode(new RemoteProtocol.MouseMove(5, 6))));
+            sender.start();
+            sender.join(2000);
+            assertFalse(sender.isAlive());
+            assertEquals(List.of("5,6"), input.moves);
+        } finally {
+            release.countDown();
+            stepper.join(5000);
+            host.close();
+        }
+    }
+
+    private static DesktopHost host(RecordingTransport transport, ScreenSource source, RecordingInput input, HostSettings settings) {
         return new DesktopHost(transport, source, input, settings);
     }
 

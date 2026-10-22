@@ -27,6 +27,8 @@ public final class Options {
     public String desktop;
     /** Host only: the viewer may watch but not control. */
     public boolean viewOnly;
+    /** Remote desktop host upload cap in bytes per second; 0 = the built-in default. */
+    public int maxBytesPerSecond;
     /** Browser access (iPad etc.): TCP port of the web page, or -1 when off. */
     public int webPort = -1;
     /** Address the web page listens on; loopback unless the user opts in to more. */
@@ -64,6 +66,7 @@ public final class Options {
                     }
                 }
                 case "--view-only" -> o.viewOnly = true;
+                case "--max-rate" -> o.maxBytesPerSecond = rate(value(args, ++i, a));
                 case "--web" -> {
                     o.webPort = DEFAULT_WEB_PORT;
                     if (i + 1 < args.length && args[i + 1].matches("\\d+")) {
@@ -101,6 +104,8 @@ public final class Options {
                   --desktop host      share this screen with the peer
                   --desktop view      view and control the peer's screen
                   --view-only         (host) let the peer watch but not control
+                  --max-rate <MB/s>   (host) upload cap for screen updates (default 8; lower it,
+                                      e.g. 2, on a slow upload to avoid lost tiles)
 
                 Browser access (iPad, phone; needs --key, no Java needed on the viewing device):
                   --web [port]        serve this screen as a web page (default port %3$d)
@@ -144,6 +149,19 @@ public final class Options {
             throw new IllegalArgumentException(flag + " needs a value");
         }
         return args[i];
+    }
+
+    static int rate(String s) {
+        final double megabytes;
+        try {
+            megabytes = Double.parseDouble(s);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("bad --max-rate: " + s);
+        }
+        if (!(megabytes >= 0.1 && megabytes <= 100)) {
+            throw new IllegalArgumentException("--max-rate must be between 0.1 and 100 MB/s: " + s);
+        }
+        return (int) Math.round(megabytes * 1_000_000);
     }
 
     static int port(String s) {

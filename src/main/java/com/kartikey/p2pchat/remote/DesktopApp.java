@@ -70,10 +70,15 @@ public final class DesktopApp {
         link.start();
     }
 
+    static HostSettings hostSettings(Options o) {
+        HostSettings settings = HostSettings.defaults().withControlAllowed(!o.viewOnly);
+        return o.maxBytesPerSecond > 0 ? settings.withMaxBytesPerSecond(o.maxBytesPerSecond) : settings;
+    }
+
     private static void startHost(Options o, RobotScreen screen, PeerLink link, LinkBridge bridge,
                                   InetSocketAddress peer) throws Exception {
         DesktopHost host = new DesktopHost(Transport.of(link), screen, new RobotInput(screen.bounds()),
-                HostSettings.defaults().withControlAllowed(!o.viewOnly));
+                hostSettings(o));
         Timer[] stats = new Timer[1];
         Runnable stop = () -> {
             if (stats[0] != null) {
