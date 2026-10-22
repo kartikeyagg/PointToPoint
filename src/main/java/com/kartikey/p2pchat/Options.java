@@ -61,7 +61,8 @@ public final class Options {
                 }
                 case "--desktop" -> {
                     o.desktop = "";
-                    if (i + 1 < args.length && (args[i + 1].equals("host") || args[i + 1].equals("view"))) {
+                    if (i + 1 < args.length && (args[i + 1].equals("host") || args[i + 1].equals("view")
+                            || args[i + 1].equals("bench"))) {
                         o.desktop = args[++i];
                     }
                 }
@@ -104,6 +105,7 @@ public final class Options {
                   --desktop host      share this screen with the peer
                   --desktop view      view and control the peer's screen
                   --view-only         (host) let the peer watch but not control
+                  --desktop bench     measure how fast this computer can share its screen
                   --max-rate <MB/s>   (host) upload cap for screen updates (default 8; lower it,
                                       e.g. 2, on a slow upload to avoid lost tiles)
 

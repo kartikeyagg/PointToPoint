@@ -31,6 +31,11 @@ class OptionsTest {
     }
 
     @Test
+    void desktopBenchMode() {
+        assertEquals("bench", Options.parse(new String[]{"--desktop", "bench"}).desktop);
+    }
+
+    @Test
     void maxRateIsInMegabytesPerSecond() {
         assertEquals(0, Options.parse(new String[0]).maxBytesPerSecond);
         assertEquals(2_500_000, Options.parse(new String[]{"--max-rate", "2.5"}).maxBytesPerSecond);

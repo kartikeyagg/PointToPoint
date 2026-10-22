@@ -26,6 +26,9 @@ public final class DesktopApp {
             System.err.println("error: remote desktop needs a graphical session (no display found)");
             return 2;
         }
+        if ("bench".equals(o.desktop)) {
+            return DesktopBench.run();
+        }
         boolean ready = !o.desktop.isEmpty() && o.peerHost != null && o.passphrase != null && !o.passphrase.isBlank();
         if (!ready) {
             DesktopLauncher.open(o, DesktopApp::start);
