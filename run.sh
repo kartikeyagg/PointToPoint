@@ -16,12 +16,16 @@ if [ ! -f target/p2p-chat.jar ] || [ -n "$(find src pom.xml -newer target/p2p-ch
   mvn -q -DskipTests package
 fi
 
-# macOS: build the fast screen capture helper (ScreenCaptureKit) for the remote desktop host.
-# Optional: without it (or without Xcode command-line tools) the host uses Java capture.
-HELPER_SRC=native/macos/ScreenStream.swift
-if [ "$(uname -s)" = "Darwin" ] && [ -f "$HELPER_SRC" ] && command -v swiftc >/dev/null 2>&1; then
+# Build the fast screen capture helper for the remote desktop host: ScreenCaptureKit on macOS,
+# MIT-SHM on Linux X11. Optional: without it (or without a compiler) the host uses Java capture.
+case "$(uname -s)" in
+  Darwin) HELPER_SRC=native/macos/ScreenStream.swift; BUILD=(swiftc -O -o target/screenstream "$HELPER_SRC") ;;
+  Linux)  HELPER_SRC=native/linux/screenstream.c;    BUILD=(cc -O2 -o target/screenstream "$HELPER_SRC" -lX11 -lXext) ;;
+  *)      HELPER_SRC= ;;
+esac
+if [ -n "$HELPER_SRC" ] && [ -f "$HELPER_SRC" ] && command -v "${BUILD[0]}" >/dev/null 2>&1; then
   if [ ! -x target/screenstream ] || [ "$HELPER_SRC" -nt target/screenstream ]; then
-    swiftc -O -o target/screenstream "$HELPER_SRC" \
+    "${BUILD[@]}" \
       || echo "warning: could not build the capture helper; remote desktop will use Java capture" >&2
   fi
 fi

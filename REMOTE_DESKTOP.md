@@ -52,16 +52,22 @@ From the terminal:
 The remote desktop uses UDP port **7284** by default, so it can run next to the chat (7283).
 Everything in the README's *Will it connect?* section applies here too.
 
-## Fast screen capture on macOS
+## Fast screen capture (macOS and Linux)
 
-Java's own screen capture (`java.awt.Robot`) needs about 60 ms per frame on a Mac, which limits
-sharing to about 15 frames/s. On macOS, `./run.sh` and `./desktop.sh` therefore also build a small
-native helper, `target/screenstream`, from `native/macos/ScreenStream.swift`. It uses
-ScreenCaptureKit, which sends only the regions that changed, and the host then runs at 30 frames/s.
+Java's own screen capture (`java.awt.Robot`) is slow: about 60 ms per frame on a Mac and about
+100 ms for a 1920x1080 Linux screen, which limits sharing to 8–15 frames/s. On Linux it also holds
+up the mouse and keyboard that the viewer sends, so dragging lags. `./run.sh` and `./desktop.sh`
+therefore also build a small native helper, `target/screenstream`, and the host uses it to run at
+30 frames/s:
 
-- Building it needs the Xcode command-line tools (`xcode-select --install`). Without them,
-  or if the helper fails, the host uses Java capture. Nothing else changes.
-- The terminal app that runs it needs **Screen Recording** permission, the same as for Java capture.
+| Shared computer | Helper source | How it captures | Needs to build |
+|---|---|---|---|
+| macOS | `native/macos/ScreenStream.swift` | ScreenCaptureKit, sends only regions that changed | Xcode command-line tools (`xcode-select --install`) |
+| Linux (X11) | `native/linux/screenstream.c` | X11 shared memory (MIT-SHM), sends only tiles that changed | a C compiler and X11 headers (`sudo apt install build-essential libx11-dev libxext-dev`) |
+
+- Without the build tools, or if the helper fails, the host uses Java capture. Nothing else changes.
+- macOS: the terminal app that runs it needs **Screen Recording** permission, the same as for Java capture.
+- Linux: X11 sessions only. On Wayland the helper declines and Java capture is used.
 - `./desktop.sh bench` prints `capture source: native helper` when the helper is in use.
 - `--java-capture` turns the helper off. `P2P_SCREENSTREAM=/path/to/helper` points at a different build.
 
@@ -76,8 +82,9 @@ full-screen change: 24.0 ms to find, encode and send 131 tiles (220 KB)
 => about 16 frames/s while the whole screen changes (limit 20)
 ```
 
-- **capture** is how long `java.awt.Robot` takes to grab the screen. Everything else waits on it.
-  On some desktops it takes hundreds of milliseconds, and then that is the frame rate limit.
+- **capture** is how long a screen grab takes: a few milliseconds with the native helper, often
+  100 ms or more with `java.awt.Robot`. Everything else waits on it, so it sets the frame rate limit.
+  If it says `Java Robot`, see *Fast screen capture* above.
 - **full-screen change** is the host's own work for a dragged window or a scrolled page.
 - Start the viewer with `P2P_STATS=1 ./desktop.sh view …` to print, every second, what arrives
   (KB/s, tiles drawn) and how many tiles stayed incomplete because a datagram was lost.
@@ -98,7 +105,7 @@ full-screen change: 24.0 ms to find, encode and send 131 tiles (220 KB)
 ## How it works
 
 ```
-host: capture screen (java.awt.Robot) up to 20 times a second
+host: capture screen (native helper 30×/s, or java.awt.Robot 20×/s)
       → cut into 128×128 tiles → keep the tiles that changed
       → JPEG the changed tiles on all CPU cores → split into ≤1087-byte fragments → encrypted UDP datagrams
 viewer: reassemble fragments → decode → draw into its copy of the screen → paint scaled
@@ -115,9 +122,10 @@ viewer input → MouseMove (datagram) / buttons, wheel, keys (reliable, in order
   changed 1080p screen (about 220 KB) in one frame, so a dragged window arrives at once instead of
   in bands. Changes beyond the cap are sent in the next frames, so a busy screen gets less smooth
   but never floods the link.
-- **Latency**: input is applied on the network thread as soon as it arrives. It never waits for a
-  capture or encode in progress. On a 1080p screen a full-screen change takes about 25 ms to
-  encode, and the screen capture itself (`java.awt.Robot`) is usually the slowest step.
+- **Latency**: input is applied on the network thread as soon as it arrives. It never waits for an
+  encode in progress. On a 1080p screen a full-screen change takes about 25 ms to encode. With
+  `java.awt.Robot` the screen capture is the slowest step, and on Linux each mouse move also
+  waits for the capture in progress (up to ~100 ms), which the native helper avoids.
 - The viewer's coordinates are host-screen pixels. The window letterboxes the image and maps
   clicks back.
 
@@ -148,6 +156,7 @@ Messages are defined in `remote/RemoteProtocol.java`:
 | `remote/DesktopApp` | starts host or viewer, wires the link (`LinkBridge`) |
 | `remote/DesktopHost`, `TileEncoder` | capture loop, tile diff, JPEG + fragments, bandwidth budget, input replay |
 | `remote/RobotScreen`, `RobotInput` | real screen capture and input injection via `java.awt.Robot` |
+| `remote/NativeScreen`, `native/macos`, `native/linux` | fast capture through the `screenstream` helper process |
 | `remote/DesktopViewer`, `TileAssembler` | fragment reassembly, version ordering, the viewer's copy of the screen |
 | `remote/ViewerWindow`, `HostWindow`, `DesktopLauncher` | Swing windows |
 | `remote/RemoteProtocol`, `Transport`, `ScreenSource`, `InputSink`, `HostSettings` | shared contracts |
