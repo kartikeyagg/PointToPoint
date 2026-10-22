@@ -27,6 +27,9 @@ public final class RobotScreen implements ScreenSource {
     @Override
     public BufferedImage capture() {
         BufferedImage captured = robot.createScreenCapture(bounds);
+        if (captured.getType() == BufferedImage.TYPE_INT_RGB) {
+            return captured; // already the format the host works on; skip a full-screen copy
+        }
         BufferedImage result = new BufferedImage(bounds.width, bounds.height, BufferedImage.TYPE_INT_RGB);
         java.awt.Graphics graphics = result.getGraphics();
         try {

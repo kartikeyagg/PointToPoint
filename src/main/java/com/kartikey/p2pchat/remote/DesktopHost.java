@@ -1,11 +1,13 @@
 package com.kartikey.p2pchat.remote;
 
 import java.awt.image.BufferedImage;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 
 /** Captures, streams, and optionally accepts input for a shared desktop. */
@@ -20,13 +22,19 @@ public final class DesktopHost implements AutoCloseable {
             Comparator.comparingInt(TileEncoder.Position::y).thenComparingInt(TileEncoder.Position::x));
     private final Set<String> reportedFailures = new HashSet<>();
     private BufferedImage frame;
-    private boolean controlAllowed;
+    /*
+     * Input arrives on the network thread and must never wait for a capture or encode step,
+     * so the fields it reads are volatile instead of guarded by the lock.
+     */
+    private volatile boolean controlAllowed;
+    private volatile int frameWidth;
+    private volatile int frameHeight;
     private volatile boolean closed;
     private Thread captureThread;
     private int refreshCursor;
     private int version;
-    private long tilesSent;
-    private long bytesSent;
+    private final AtomicLong tilesSent = new AtomicLong();
+    private final AtomicLong bytesSent = new AtomicLong();
 
     public DesktopHost(Transport transport, ScreenSource screen, InputSink input, HostSettings settings) {
         if (transport == null || screen == null || input == null || settings == null) {
@@ -91,41 +99,28 @@ public final class DesktopHost implements AutoCloseable {
         } else if (message instanceof RemoteProtocol.MouseWheel wheel) {
             replay(wheel.x(), wheel.y(), (x, y) -> input.mouseWheel(x, y, wheel.rotation()));
         } else if (message instanceof RemoteProtocol.Key key && key.keyCode() > 0) {
-            synchronized (lock) {
-                if (controlAllowed && frame != null) {
-                    // Deliberately outside the lock: input can block on the desktop system.
-                } else {
-                    return;
-                }
+            if (controlAllowed && frameWidth > 0) {
+                input.key(key.keyCode(), key.pressed());
             }
-            input.key(key.keyCode(), key.pressed());
         }
     }
 
     /** Enables or disables remote input and informs the connected viewer. */
     public void setControlAllowed(boolean allowed) {
-        synchronized (lock) {
-            controlAllowed = allowed;
-            transport.send(new RemoteProtocol.ControlState(allowed));
-        }
+        controlAllowed = allowed;
+        transport.send(new RemoteProtocol.ControlState(allowed));
     }
 
     public boolean isControlAllowed() {
-        synchronized (lock) {
-            return controlAllowed;
-        }
+        return controlAllowed;
     }
 
     public long tilesSent() {
-        synchronized (lock) {
-            return tilesSent;
-        }
+        return tilesSent.get();
     }
 
     public long bytesSent() {
-        synchronized (lock) {
-            return bytesSent;
-        }
+        return bytesSent.get();
     }
 
     /** Captures one frame and sends as many pending tile updates as the budget permits. */
@@ -138,36 +133,49 @@ public final class DesktopHost implements AutoCloseable {
             addRefreshSliceLocked();
             long budget = settings.maxBytesPerSecond() / settings.fps();
             long used = 0;
-            while (!dirty.isEmpty()) {
-                TileEncoder.Position position = dirty.first();
-                byte[] jpeg = encoder.encode(frame, position);
-                List<RemoteProtocol.Tile> fragments = encoder.fragments(jpeg, position, version + 1);
-                long updateSize = encodedSize(fragments);
-                if (used > 0 && used + updateSize > budget) {
-                    break;
-                }
-                version++;
-                boolean complete = true;
-                for (RemoteProtocol.Tile tile : fragments) {
-                    byte[] bytes = RemoteProtocol.encode(tile);
-                    if (!transport.sendData(bytes)) {
-                        complete = false;
+            // Encode in parallel batches; tiles left over when the budget runs out stay dirty.
+            while (!dirty.isEmpty() && used < budget) {
+                List<TileEncoder.Position> batch = new ArrayList<>(BATCH);
+                for (TileEncoder.Position position : dirty) {
+                    batch.add(position);
+                    if (batch.size() == BATCH) {
                         break;
                     }
-                    used += bytes.length;
-                    bytesSent += bytes.length;
                 }
-                if (!complete) {
-                    break;
-                }
-                dirty.remove(position);
-                tilesSent++;
-                if (used >= budget) {
-                    break;
+                List<byte[]> jpegs = encoder.encodeAll(frame, batch);
+                for (int i = 0; i < batch.size(); i++) {
+                    TileEncoder.Position position = batch.get(i);
+                    List<RemoteProtocol.Tile> fragments = encoder.fragments(jpegs.get(i), position, version + 1);
+                    List<byte[]> packets = new ArrayList<>(fragments.size());
+                    long updateSize = 0;
+                    for (RemoteProtocol.Tile tile : fragments) {
+                        byte[] bytes = RemoteProtocol.encode(tile);
+                        packets.add(bytes);
+                        updateSize += bytes.length;
+                    }
+                    if (used > 0 && used + updateSize > budget) {
+                        return;
+                    }
+                    version++;
+                    for (byte[] bytes : packets) {
+                        if (!transport.sendData(bytes)) {
+                            return;
+                        }
+                        used += bytes.length;
+                        bytesSent.addAndGet(bytes.length);
+                    }
+                    dirty.remove(position);
+                    tilesSent.incrementAndGet();
+                    if (used >= budget) {
+                        return;
+                    }
                 }
             }
         }
     }
+
+    /** Tiles encoded together; enough to keep every encoder thread busy. */
+    private static final int BATCH = 32;
 
     @Override
     public void close() {
@@ -182,19 +190,15 @@ public final class DesktopHost implements AutoCloseable {
         if (thread != null) {
             thread.interrupt();
         }
+        encoder.close();
     }
 
     private void replay(int x, int y, BiConsumer<Integer, Integer> action) {
-        int clampedX;
-        int clampedY;
-        synchronized (lock) {
-            if (!controlAllowed || frame == null) {
-                return;
-            }
-            clampedX = Math.max(0, Math.min(frame.getWidth() - 1, x));
-            clampedY = Math.max(0, Math.min(frame.getHeight() - 1, y));
+        int width = frameWidth, height = frameHeight;
+        if (!controlAllowed || width <= 0 || height <= 0) {
+            return;
         }
-        action.accept(clampedX, clampedY);
+        action.accept(Math.max(0, Math.min(width - 1, x)), Math.max(0, Math.min(height - 1, y)));
     }
 
     private boolean ensureFrameLocked() {
@@ -205,6 +209,8 @@ public final class DesktopHost implements AutoCloseable {
         boolean sizeChanged = frame == null || frame.getWidth() != captured.getWidth()
                 || frame.getHeight() != captured.getHeight();
         frame = copy(captured);
+        frameWidth = frame.getWidth();
+        frameHeight = frame.getHeight();
         dirty.addAll(encoder.changedTiles(frame));
         if (sizeChanged) {
             refreshCursor = 0;
@@ -235,14 +241,6 @@ public final class DesktopHost implements AutoCloseable {
         transport.send(new RemoteProtocol.ScreenInfo(frame.getWidth(), frame.getHeight(), settings.tileSize(), controlAllowed));
     }
 
-    private long encodedSize(List<RemoteProtocol.Tile> fragments) {
-        long total = 0;
-        for (RemoteProtocol.Tile tile : fragments) {
-            total += RemoteProtocol.encode(tile).length;
-        }
-        return total;
-    }
-
     private void captureLoop() {
         long period = Math.max(1, 1000L / settings.fps());
         long next = System.currentTimeMillis();
@@ -271,10 +269,12 @@ public final class DesktopHost implements AutoCloseable {
         }
     }
 
+    /** Private RGB copy of the capture, so later changes to the source image can't race the encoders. */
     private static BufferedImage copy(BufferedImage source) {
         BufferedImage result = new BufferedImage(source.getWidth(), source.getHeight(), BufferedImage.TYPE_INT_RGB);
-        int width = source.getWidth(), height = source.getHeight();
-        result.setRGB(0, 0, width, height, source.getRGB(0, 0, width, height, null, 0, width), 0, width);
+        int[] from = TileEncoder.pixels(source);
+        int[] to = ((java.awt.image.DataBufferInt) result.getRaster().getDataBuffer()).getData();
+        System.arraycopy(from, 0, to, 0, to.length);
         return result;
     }
 }

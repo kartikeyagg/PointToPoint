@@ -1,6 +1,8 @@
 package com.kartikey.p2pchat.remote;
 
 import javax.imageio.ImageIO;
+import javax.imageio.ImageReader;
+import javax.imageio.stream.MemoryCacheImageInputStream;
 import java.awt.Dimension;
 import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
@@ -23,6 +25,8 @@ public final class DesktopViewer implements AutoCloseable {
     private final TileAssembler assembler = new TileAssembler();
     private final Map<TileCoordinate, Integer> drawnVersions = new HashMap<>();
     private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
+    /** Reused: finding a JPEG reader for every tile costs several times the decoding itself. */
+    private final ImageReader jpegReader = ImageIO.getImageReadersByFormatName("jpeg").next();
     private BufferedImage canvas;
     private int screenWidth;
     private int screenHeight;
@@ -188,12 +192,7 @@ public final class DesktopViewer implements AutoCloseable {
         if (jpeg == null) {
             return;
         }
-        BufferedImage image;
-        try {
-            image = ImageIO.read(new ByteArrayInputStream(jpeg));
-        } catch (IOException ignored) {
-            return;
-        }
+        BufferedImage image = decode(jpeg);
         if (image == null) {
             return;
         }
@@ -213,6 +212,19 @@ public final class DesktopViewer implements AutoCloseable {
             tilesDrawn++;
         }
         fireFrameUpdated();
+    }
+
+    private BufferedImage decode(byte[] jpeg) {
+        synchronized (jpegReader) {
+            try (MemoryCacheImageInputStream in = new MemoryCacheImageInputStream(new ByteArrayInputStream(jpeg))) {
+                jpegReader.setInput(in, true, true);
+                return jpegReader.read(0);
+            } catch (IOException | RuntimeException ignored) {
+                return null; // network input is untrusted
+            } finally {
+                jpegReader.setInput(null);
+            }
+        }
     }
 
     private boolean insideScreen(int x, int y) {
