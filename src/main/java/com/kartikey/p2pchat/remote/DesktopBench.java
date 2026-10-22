@@ -13,9 +13,18 @@ public final class DesktopBench {
 
     private DesktopBench() {}
 
-    public static int run() {
+    public static int run(com.kartikey.p2pchat.Options o) {
+        ScreenSource screen = null;
         try {
-            RobotScreen screen = new RobotScreen();
+            RobotScreen robot = new RobotScreen();
+            screen = DesktopApp.openScreen(o, robot);
+            String kind = screen instanceof NativeScreen ? "native helper" : "Java Robot";
+            if (screen instanceof NativeScreen nativeScreen) {
+                long before = nativeScreen.frames();
+                Thread.sleep(2000);
+                System.out.printf("native helper:     %d frames in 2 s (it only sends frames when the screen changes)%n",
+                        nativeScreen.frames() - before);
+            }
             BufferedImage image = null;
             for (int i = 0; i < 3; i++) {
                 image = screen.capture();
@@ -25,6 +34,7 @@ public final class DesktopBench {
                 image = screen.capture();
             }
             double captureMs = (System.nanoTime() - start) / 1e6 / RUNS;
+            System.out.printf("capture source:    %s%n", kind);
 
             // Alternate between the screen and a shifted copy, so every frame is a full-screen change.
             BufferedImage shifted = new BufferedImage(image.getWidth(), image.getHeight(), BufferedImage.TYPE_INT_RGB);
@@ -53,7 +63,7 @@ public final class DesktopBench {
                 @Override public void mouseWheel(int x, int y, int rotation) {}
                 @Override public void key(int keyCode, boolean pressed) {}
             };
-            HostSettings settings = HostSettings.defaults();
+            HostSettings settings = DesktopApp.hostSettings(o, screen instanceof NativeScreen);
             double encodeMs;
             long tiles;
             try (DesktopHost host = new DesktopHost(counting, alternating, none, settings)) {
@@ -80,6 +90,10 @@ public final class DesktopBench {
         } catch (Exception e) {
             System.err.println("error: " + e.getMessage());
             return 1;
+        } finally {
+            if (screen instanceof NativeScreen nativeScreen) {
+                nativeScreen.close();
+            }
         }
     }
 }

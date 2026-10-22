@@ -15,4 +15,14 @@ JAVA="${JAVA_HOME:+$JAVA_HOME/bin/}java"
 if [ ! -f target/p2p-chat.jar ] || [ -n "$(find src pom.xml -newer target/p2p-chat.jar -print -quit)" ]; then
   mvn -q -DskipTests package
 fi
+
+# macOS: build the fast screen capture helper (ScreenCaptureKit) for the remote desktop host.
+# Optional: without it (or without Xcode command-line tools) the host uses Java capture.
+HELPER_SRC=native/macos/ScreenStream.swift
+if [ "$(uname -s)" = "Darwin" ] && [ -f "$HELPER_SRC" ] && command -v swiftc >/dev/null 2>&1; then
+  if [ ! -x target/screenstream ] || [ "$HELPER_SRC" -nt target/screenstream ]; then
+    swiftc -O -o target/screenstream "$HELPER_SRC" \
+      || echo "warning: could not build the capture helper; remote desktop will use Java capture" >&2
+  fi
+fi
 exec "$JAVA" -jar target/p2p-chat.jar "$@"

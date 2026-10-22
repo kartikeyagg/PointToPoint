@@ -33,6 +33,7 @@ class OptionsTest {
     @Test
     void desktopBenchMode() {
         assertEquals("bench", Options.parse(new String[]{"--desktop", "bench"}).desktop);
+        org.junit.jupiter.api.Assertions.assertTrue(Options.parse(new String[]{"--java-capture"}).javaCapture);
     }
 
     @Test
