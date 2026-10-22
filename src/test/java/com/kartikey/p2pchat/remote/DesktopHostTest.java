@@ -64,6 +64,29 @@ class DesktopHostTest {
     }
 
     @Test
+    void gameMouseMovesRelativelyAndClicksWithoutMoving() {
+        RecordingTransport transport = new RecordingTransport();
+        RecordingInput input = new RecordingInput();
+        DesktopHost host = host(transport, new Source(image(10, 8)), input,
+                new HostSettings(1, .7f, 64, 1_000_000, 99, true));
+        host.onMessage(RemoteProtocol.encode(new RemoteProtocol.MouseDelta(-3, 4)));
+        assertTrue(input.moves.isEmpty(), "no input before the first frame");
+        host.step();
+        host.onMessage(RemoteProtocol.encode(new RemoteProtocol.MouseDelta(-3, 4)));
+        host.onMessage(RemoteProtocol.encode(new RemoteProtocol.MouseDelta(1_000_000, -1_000_000)));
+        host.onMessage(RemoteProtocol.encode(new RemoteProtocol.MouseButton(
+                RemoteProtocol.HERE, RemoteProtocol.HERE, RemoteProtocol.BUTTON_LEFT, true)));
+        host.onMessage(RemoteProtocol.encode(new RemoteProtocol.MouseWheel(RemoteProtocol.HERE, RemoteProtocol.HERE, 2)));
+        assertEquals(List.of("by -3,4", "by " + DesktopHost.MAX_DELTA + "," + -DesktopHost.MAX_DELTA,
+                "button 1 true", "wheel 2"), input.moves);
+        host.setControlAllowed(false);
+        host.onMessage(RemoteProtocol.encode(new RemoteProtocol.MouseDelta(1, 1)));
+        host.onMessage(RemoteProtocol.encode(new RemoteProtocol.MouseButton(
+                RemoteProtocol.HERE, RemoteProtocol.HERE, RemoteProtocol.BUTTON_LEFT, false)));
+        assertEquals(4, input.moves.size(), "view only ignores game mouse input too");
+    }
+
+    @Test
     void inputIsNotHeldUpByASlowCapture() throws Exception {
         BufferedImage frame = image(64, 64);
         java.util.concurrent.CountDownLatch capturing = new java.util.concurrent.CountDownLatch(1);
@@ -139,5 +162,8 @@ class DesktopHostTest {
         @Override public void mouseButton(int x, int y, int button, boolean pressed) { }
         @Override public void mouseWheel(int x, int y, int rotation) { }
         @Override public void key(int keyCode, boolean pressed) { }
+        @Override public void mouseMoveBy(int dx, int dy) { moves.add("by " + dx + "," + dy); }
+        @Override public void mouseButtonHere(int button, boolean pressed) { moves.add("button " + button + " " + pressed); }
+        @Override public void mouseWheelHere(int rotation) { moves.add("wheel " + rotation); }
     }
 }

@@ -31,15 +31,30 @@ public final class ViewerWindow {
     private final JLabel status;
     private final AtomicBoolean closeNotified = new AtomicBoolean();
     private final Runnable onClose;
+    private final DesktopViewer viewer;
+    private final CanvasPanel canvas;
+    private final GameMouse game;
+    private final JButton gameButton;
+    private final java.awt.Cursor blankCursor;
 
     private ViewerWindow(DesktopViewer viewer, String title, Runnable onClose) {
         this.onClose = onClose;
+        this.viewer = viewer;
         frame = new JFrame(title);
         frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
-        CanvasPanel canvas = new CanvasPanel(viewer);
+        canvas = new CanvasPanel(viewer);
         canvas.setFocusable(true);
         canvas.setFocusTraversalKeysEnabled(false);
-        installInput(canvas, viewer);
+        game = new GameMouse(viewerPointer());
+        blankCursor = Toolkit.getDefaultToolkit().createCustomCursor(
+                new java.awt.image.BufferedImage(16, 16, java.awt.image.BufferedImage.TYPE_INT_ARGB),
+                new java.awt.Point(0, 0), "none");
+        gameButton = new JButton(GAME_OFF);
+        gameButton.setFocusable(false);
+        gameButton.setToolTipText("Sends mouse motion instead of positions, for games that lock the pointer. "
+                + "Ctrl+Alt+G turns it on and off.");
+        gameButton.addActionListener(e -> setGameMouse(!game.active()));
+        installInput();
         viewer.addListener(new DesktopViewer.Listener() {
             @Override
             public void tileDrawn(int x, int y, java.awt.image.BufferedImage tile) {
@@ -58,13 +73,21 @@ public final class ViewerWindow {
         refresh.setFocusable(false);
         refresh.addActionListener(e -> viewer.requestRefresh());
         JPanel bottom = new JPanel(new BorderLayout(8, 0));
+        JPanel buttons = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
+        buttons.add(refresh);
+        buttons.add(gameButton);
         bottom.add(status, BorderLayout.CENTER);
         bottom.add(control, BorderLayout.EAST);
-        bottom.add(refresh, BorderLayout.WEST);
+        bottom.add(buttons, BorderLayout.WEST);
         viewer.addListener(new DesktopViewer.Listener() {
             @Override
             public void stateChanged() {
-                SwingUtilities.invokeLater(() -> control.setText(viewer.controlAllowed() ? "" : "View only"));
+                SwingUtilities.invokeLater(() -> {
+                    control.setText(viewer.controlAllowed() ? "" : "View only");
+                    if (!viewer.controlAllowed()) {
+                        setGameMouse(false);
+                    }
+                });
             }
         });
         control.setText(viewer.controlAllowed() ? "" : "View only");
@@ -77,6 +100,11 @@ public final class ViewerWindow {
             @Override
             public void windowClosed(WindowEvent event) {
                 notifyClosed();
+            }
+
+            @Override
+            public void windowDeactivated(WindowEvent event) {
+                setGameMouse(false); // never keep hold of the pointer behind another window
             }
         });
     }
@@ -143,7 +171,50 @@ public final class ViewerWindow {
         }
     }
 
-    private static void installInput(JPanel panel, DesktopViewer viewer) {
+    static final String GAME_OFF = "Game mouse", GAME_ON = "Release mouse (Ctrl+Alt+G)";
+
+    private static GameMouse.Pointer viewerPointer() {
+        try {
+            java.awt.Robot robot = new java.awt.Robot();
+            return robot::mouseMove;
+        } catch (java.awt.AWTException | SecurityException e) {
+            return (x, y) -> {}; // GameMouse notices that warps don't happen
+        }
+    }
+
+    /** Game mouse mode: hide the pointer, keep it in the window, and send motion instead of positions. */
+    private void setGameMouse(boolean on) {
+        if (on == game.active() || (on && !viewer.controlAllowed()) || (on && !canvas.isShowing())) {
+            return;
+        }
+        if (on) {
+            canvas.requestFocusInWindow();
+            canvas.setCursor(blankCursor);
+            game.start(centreX(), centreY(), radius());
+            setStatus("Game mouse on: Ctrl+Alt+G releases the mouse");
+        } else {
+            game.stop();
+            canvas.setCursor(java.awt.Cursor.getDefaultCursor());
+            setStatus("Game mouse off");
+        }
+        gameButton.setText(on ? GAME_ON : GAME_OFF);
+    }
+
+    private int centreX() {
+        return canvas.getLocationOnScreen().x + canvas.getWidth() / 2;
+    }
+
+    private int centreY() {
+        return canvas.getLocationOnScreen().y + canvas.getHeight() / 2;
+    }
+
+    /** How far the pointer may stray before it is put back: well inside the window. */
+    private int radius() {
+        return Math.min(canvas.getWidth(), canvas.getHeight()) / 8;
+    }
+
+    private void installInput() {
+        JPanel panel = canvas;
         MouseAdapter mouse = new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent event) {
@@ -153,27 +224,36 @@ public final class ViewerWindow {
             @Override
             public void mousePressed(MouseEvent event) {
                 panel.requestFocusInWindow();
-                sendButton(event, viewer, panel);
+                sendButton(event);
             }
 
             @Override
             public void mouseReleased(MouseEvent event) {
-                sendButton(event, viewer, panel);
+                sendButton(event);
+            }
+
+            @Override
+            public void mouseExited(MouseEvent event) {
+                game.exited();
             }
         };
         panel.addMouseListener(mouse);
         panel.addMouseMotionListener(new MouseMotionAdapter() {
             @Override
             public void mouseMoved(MouseEvent event) {
-                sendMove(event, viewer, panel);
+                sendMove(event);
             }
 
             @Override
             public void mouseDragged(MouseEvent event) {
-                sendMove(event, viewer, panel);
+                sendMove(event);
             }
         });
         MouseWheelListener wheel = event -> {
+            if (game.active()) {
+                viewer.mouseWheelHere(event.getWheelRotation());
+                return;
+            }
             java.awt.Point point = remotePoint(event, viewer, panel);
             if (point != null) {
                 viewer.mouseWheel(point.x, point.y, event.getWheelRotation());
@@ -183,30 +263,53 @@ public final class ViewerWindow {
         panel.addKeyListener(new KeyAdapter() {
             @Override
             public void keyPressed(KeyEvent event) {
+                if (isGameToggle(event)) {
+                    setGameMouse(!game.active());
+                    return;
+                }
                 sendKey(event, viewer, true);
             }
 
             @Override
             public void keyReleased(KeyEvent event) {
-                sendKey(event, viewer, false);
+                if (!isGameToggle(event)) {
+                    sendKey(event, viewer, false);
+                }
             }
         });
     }
 
-    private static void sendMove(MouseEvent event, DesktopViewer viewer, JPanel panel) {
-        java.awt.Point point = remotePoint(event, viewer, panel);
+    static boolean isGameToggle(KeyEvent event) {
+        return event.getKeyCode() == KeyEvent.VK_G && event.isControlDown() && event.isAltDown();
+    }
+
+    private void sendMove(MouseEvent event) {
+        if (game.active()) {
+            game.setCentre(centreX(), centreY(), radius());
+            int[] delta = game.moved(event.getXOnScreen(), event.getYOnScreen());
+            if (delta != null) {
+                viewer.mouseDelta(delta[0], delta[1]);
+            }
+            return;
+        }
+        java.awt.Point point = remotePoint(event, viewer, canvas);
         if (point != null) {
             viewer.mouseMove(point.x, point.y);
         }
     }
 
-    private static void sendButton(MouseEvent event, DesktopViewer viewer, JPanel panel) {
+    private void sendButton(MouseEvent event) {
         int button = SwingUtilities.isLeftMouseButton(event) ? RemoteProtocol.BUTTON_LEFT
                 : SwingUtilities.isMiddleMouseButton(event) ? RemoteProtocol.BUTTON_MIDDLE
                 : SwingUtilities.isRightMouseButton(event) ? RemoteProtocol.BUTTON_RIGHT : 0;
-        java.awt.Point point = remotePoint(event, viewer, panel);
+        boolean pressed = event.getID() == MouseEvent.MOUSE_PRESSED;
+        if (button != 0 && game.active()) {
+            viewer.mouseButtonHere(button, pressed);
+            return;
+        }
+        java.awt.Point point = remotePoint(event, viewer, canvas);
         if (button != 0 && point != null) {
-            viewer.mouseButton(point.x, point.y, button, event.getID() == MouseEvent.MOUSE_PRESSED);
+            viewer.mouseButton(point.x, point.y, button, pressed);
         }
     }
 
