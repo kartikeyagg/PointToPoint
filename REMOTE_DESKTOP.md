@@ -44,11 +44,28 @@ From the terminal:
 | `--desktop host` | share this screen | |
 | `--desktop view` | watch and control the peer's screen | |
 | `--view-only` | host: the viewer can watch but not control (can be switched on later in the host window) | control allowed |
+| `--desktop bench` | measure this computer's screen capture and encoding speed (see *Slow picture?* below) | |
 | `--max-rate <MB/s>` | host: upload cap for screen updates. Lower it (e.g. `2`) when the host's upload is slow and the picture keeps missing tiles | `8` |
 | `--peer`, `--peer-port`, `--port`, `--key`, `--no-stun` | same as for the chat | ports `7284` |
 
 The remote desktop uses UDP port **7284** by default, so it can run next to the chat (7283).
 Everything in the README's *Will it connect?* section applies here too.
+
+## Slow picture?
+
+Run `./desktop.sh bench` on the computer that **shares** its screen. It connects to nobody and prints:
+
+```
+screen:            1920 x 1080
+capture:           38.0 ms per frame
+full-screen change: 24.0 ms to find, encode and send 131 tiles (220 KB)
+=> about 16 frames/s while the whole screen changes (limit 20)
+```
+
+- **capture** is how long `java.awt.Robot` takes to grab the screen. Everything else waits on it.
+  On some desktops it takes hundreds of milliseconds, and then that is the frame rate limit.
+- **full-screen change** is the host's own work for a dragged window or a scrolled page.
+- If both are small but the picture still lags, the network is dropping tiles: lower `--max-rate`.
 
 ## Safety
 
