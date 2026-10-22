@@ -13,6 +13,12 @@ final class TileAssembler {
 
     private final Map<Key, Assembly> assemblies = new LinkedHashMap<>();
     private final Map<Coordinate, Integer> newestPartial = new LinkedHashMap<>();
+    /** Tiles given up incomplete (a fragment never arrived): superseded, expired or evicted. */
+    private long incomplete;
+
+    long incomplete() {
+        return incomplete;
+    }
 
     /** Adds a fragment, returning its joined bytes when the set is complete. */
     byte[] add(RemoteProtocol.Tile tile) {
@@ -61,6 +67,7 @@ final class TileAssembler {
             Map.Entry<Key, Assembly> entry = iterator.next();
             if (now - entry.getValue().createdNanos > MAX_AGE_NANOS) {
                 iterator.remove();
+                incomplete++;
                 newestPartial.remove(new Coordinate(entry.getKey().tileX, entry.getKey().tileY));
             }
         }
@@ -71,6 +78,7 @@ final class TileAssembler {
             Iterator<Map.Entry<Key, Assembly>> iterator = assemblies.entrySet().iterator();
             Map.Entry<Key, Assembly> oldest = iterator.next();
             iterator.remove();
+            incomplete++;
             newestPartial.remove(new Coordinate(oldest.getKey().tileX, oldest.getKey().tileY));
         }
     }
@@ -81,6 +89,7 @@ final class TileAssembler {
             Map.Entry<Key, Assembly> entry = iterator.next();
             if (entry.getKey().tileX == coordinate.tileX && entry.getKey().tileY == coordinate.tileY) {
                 iterator.remove();
+                incomplete++;
             }
         }
     }

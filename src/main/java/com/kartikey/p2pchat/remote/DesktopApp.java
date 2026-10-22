@@ -161,8 +161,32 @@ public final class DesktopApp {
         });
     }
 
+    /** Once a second: what arrived, what was drawn, what was lost (P2P_STATS=1). */
+    private static void printStats(DesktopViewer viewer) {
+        DesktopViewer.Stats[] last = {viewer.stats()};
+        Thread thread = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                DesktopViewer.Stats now = viewer.stats(), before = last[0];
+                last[0] = now;
+                long drawn = now.tilesDrawn() - before.tilesDrawn();
+                long lost = now.tilesIncomplete() - before.tilesIncomplete();
+                System.out.printf("%tT stats: %d KB/s, %d fragments/s, %d tiles drawn/s, %d tiles incomplete/s, decode %.2f ms/tile%n",
+                        System.currentTimeMillis(), (now.bytes() - before.bytes()) / 1024,
+                        now.fragments() - before.fragments(), drawn, lost,
+                        drawn == 0 ? 0.0 : (now.decodeNanos() - before.decodeNanos()) / 1e6 / drawn);
+            }
+        }, "viewer-stats");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
     private static void startViewer(PeerLink link, LinkBridge bridge, InetSocketAddress peer) {
-        DesktopViewer viewer = new DesktopViewer(Transport.of(link));
+        DesktopViewer viewer = DesktopViewer.withRenderThread(Transport.of(link));
         ViewerWindow window = ViewerWindow.open(viewer, "Remote desktop - " + StunClient.format(peer), () -> {
             viewer.close();
             link.close();
@@ -170,5 +194,8 @@ public final class DesktopApp {
         });
         bridge.status = window::setStatus;
         bridge.viewer = viewer;
+        if (System.getenv("P2P_STATS") != null) {
+            printStats(viewer);
+        }
     }
 }
