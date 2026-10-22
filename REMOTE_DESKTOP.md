@@ -44,12 +44,26 @@ From the terminal:
 | `--desktop host` | share this screen | |
 | `--desktop view` | watch and control the peer's screen | |
 | `--view-only` | host: the viewer can watch but not control (can be switched on later in the host window) | control allowed |
+| `--java-capture` | host on macOS: use Java's screen capture even when the native helper is built | native helper if present |
 | `--desktop bench` | measure this computer's screen capture and encoding speed (see *Slow picture?* below) | |
 | `--max-rate <MB/s>` | host: upload cap for screen updates. Lower it (e.g. `2`) when the host's upload is slow and the picture keeps missing tiles | `8` |
 | `--peer`, `--peer-port`, `--port`, `--key`, `--no-stun` | same as for the chat | ports `7284` |
 
 The remote desktop uses UDP port **7284** by default, so it can run next to the chat (7283).
 Everything in the README's *Will it connect?* section applies here too.
+
+## Fast screen capture on macOS
+
+Java's own screen capture (`java.awt.Robot`) needs about 60 ms per frame on a Mac, which limits
+sharing to about 15 frames/s. On macOS, `./run.sh` and `./desktop.sh` therefore also build a small
+native helper, `target/screenstream`, from `native/macos/ScreenStream.swift`. It uses
+ScreenCaptureKit, which sends only the regions that changed, and the host then runs at 30 frames/s.
+
+- Building it needs the Xcode command-line tools (`xcode-select --install`). Without them,
+  or if the helper fails, the host uses Java capture. Nothing else changes.
+- The terminal app that runs it needs **Screen Recording** permission, the same as for Java capture.
+- `./desktop.sh bench` prints `capture source: native helper` when the helper is in use.
+- `--java-capture` turns the helper off. `P2P_SCREENSTREAM=/path/to/helper` points at a different build.
 
 ## Slow picture?
 
