@@ -38,7 +38,7 @@ public final class HostWindow {
         frame.addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosing(WindowEvent event) {
-                stop();
+                stop("sharing window closed");
             }
         });
 
@@ -50,7 +50,11 @@ public final class HostWindow {
         JCheckBox control = new JCheckBox("Allow remote control", controlAllowed);
         control.addActionListener(event -> onControlToggle.accept(control.isSelected()));
         JButton stop = new JButton("Stop sharing");
-        stop.addActionListener(event -> stop());
+        stop.addActionListener(event -> stop("Stop sharing pressed"));
+        // Keys typed by the viewer land in whichever window has focus. This notice must never be
+        // that window, or a remote Space/Enter would press its buttons and end the session.
+        control.setFocusable(false);
+        stop.setFocusable(false);
 
         JPanel details = new JPanel(new GridLayout(0, 1, 0, 4));
         details.add(notice);
@@ -64,6 +68,8 @@ public final class HostWindow {
         frame.setContentPane(content);
         frame.pack();
         placeTopRight();
+        frame.setFocusableWindowState(false);
+        frame.setAutoRequestFocus(false);
         frame.setVisible(true);
     }
 
@@ -88,6 +94,30 @@ public final class HostWindow {
         SwingUtilities.invokeLater(() -> status.setText(text));
     }
 
+    /** True if any part of the notice can take keyboard focus (it must not). */
+    boolean canTakeKeyboardFocus() {
+        if (frame.getFocusableWindowState()) {
+            return true;
+        }
+        for (java.awt.Component c : components(frame.getContentPane())) {
+            if (c.isFocusable() && (c instanceof JButton || c instanceof JCheckBox)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static java.util.List<java.awt.Component> components(java.awt.Container root) {
+        java.util.List<java.awt.Component> all = new java.util.ArrayList<>();
+        for (java.awt.Component c : root.getComponents()) {
+            all.add(c);
+            if (c instanceof java.awt.Container container) {
+                all.addAll(components(container));
+            }
+        }
+        return all;
+    }
+
     /** Updates the sent-tile counters. */
     public void setStats(long tilesSent, long bytesSent) {
         SwingUtilities.invokeLater(() -> stats.setText(tilesSent + " tiles, " + formatBytes(bytesSent) + " sent"));
@@ -98,8 +128,9 @@ public final class HostWindow {
         SwingUtilities.invokeLater(frame::dispose);
     }
 
-    private void stop() {
+    private void stop(String reason) {
         if (stopped.compareAndSet(false, true)) {
+            System.out.println("sharing stopped: " + reason);
             frame.dispose();
             onStop.run();
         }

@@ -148,6 +148,8 @@ public final class DesktopApp {
             link.close();
             System.exit(0);
         };
+        Runtime.getRuntime().addShutdownHook(new Thread(
+                () -> System.out.println("remote desktop host exiting"), "host-exit-log"));
         HostWindow window = HostWindow.open(StunClient.format(peer), host.isControlAllowed(),
                 host::setControlAllowed, stop);
         bridge.status = window::setStatus;
