@@ -19,7 +19,8 @@ class RemoteProtocolTest {
         List<Message> all = List.of(new ScreenInfo(2560, 1440, 64, true), new ControlState(false),
                 new ViewRequest(RemoteProtocol.VERSION), new Refresh(), new MouseMove(-5, 1079),
                 new MouseButton(10, 20, RemoteProtocol.BUTTON_RIGHT, true), new MouseWheel(1, 2, -3),
-                new Key(java.awt.event.KeyEvent.VK_ENTER, false));
+                new Key(java.awt.event.KeyEvent.VK_ENTER, false), new RemoteProtocol.MouseDelta(-7, 300),
+                new MouseButton(RemoteProtocol.HERE, RemoteProtocol.HERE, RemoteProtocol.BUTTON_LEFT, false));
         for (Message m : all) {
             assertEquals(m, RemoteProtocol.decode(RemoteProtocol.encode(m)));
         }
@@ -39,6 +40,7 @@ class RemoteProtocolTest {
     @Test
     void channelsAreChosenByKind() {
         assertFalse(RemoteProtocol.isReliable(new MouseMove(0, 0)));
+        assertFalse(RemoteProtocol.isReliable(new RemoteProtocol.MouseDelta(1, 0)));
         assertFalse(RemoteProtocol.isReliable(new Tile(0, 0, 0, 0, 1, new byte[0])));
         assertTrue(RemoteProtocol.isReliable(new Key(65, true)));
         assertTrue(RemoteProtocol.isReliable(new ScreenInfo(1, 1, 64, false)));

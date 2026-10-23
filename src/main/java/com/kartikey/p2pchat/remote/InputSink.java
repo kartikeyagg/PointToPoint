@@ -16,4 +16,13 @@ public interface InputSink {
 
     /** {@code keyCode} is a {@link java.awt.event.KeyEvent} VK_ code. */
     void key(int keyCode, boolean pressed);
+
+    /** Moves the pointer by ({@code dx}, {@code dy}) from wherever it is now (game mouse mode). */
+    default void mouseMoveBy(int dx, int dy) {}
+
+    /** Presses or releases {@code button} where the pointer is, without moving it. */
+    default void mouseButtonHere(int button, boolean pressed) {}
+
+    /** Scrolls where the pointer is, without moving it. */
+    default void mouseWheelHere(int rotation) {}
 }

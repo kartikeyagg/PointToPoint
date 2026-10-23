@@ -92,12 +92,24 @@ public final class DesktopHost implements AutoCloseable {
         }
         if (message instanceof RemoteProtocol.MouseMove move) {
             replay(move.x(), move.y(), input::mouseMove);
+        } else if (message instanceof RemoteProtocol.MouseDelta delta) {
+            if (controlAllowed && frameWidth > 0) {
+                input.mouseMoveBy(clampDelta(delta.dx()), clampDelta(delta.dy()));
+            }
         } else if (message instanceof RemoteProtocol.MouseButton button) {
             if (button.button() >= RemoteProtocol.BUTTON_LEFT && button.button() <= RemoteProtocol.BUTTON_RIGHT) {
-                replay(button.x(), button.y(), (x, y) -> input.mouseButton(x, y, button.button(), button.pressed()));
+                if (isHere(button.x(), button.y())) {
+                    replayHere(() -> input.mouseButtonHere(button.button(), button.pressed()));
+                } else {
+                    replay(button.x(), button.y(), (x, y) -> input.mouseButton(x, y, button.button(), button.pressed()));
+                }
             }
         } else if (message instanceof RemoteProtocol.MouseWheel wheel) {
-            replay(wheel.x(), wheel.y(), (x, y) -> input.mouseWheel(x, y, wheel.rotation()));
+            if (isHere(wheel.x(), wheel.y())) {
+                replayHere(() -> input.mouseWheelHere(wheel.rotation()));
+            } else {
+                replay(wheel.x(), wheel.y(), (x, y) -> input.mouseWheel(x, y, wheel.rotation()));
+            }
         } else if (message instanceof RemoteProtocol.Key key && key.keyCode() > 0) {
             if (controlAllowed && frameWidth > 0) {
                 input.key(key.keyCode(), key.pressed());
@@ -191,6 +203,23 @@ public final class DesktopHost implements AutoCloseable {
             thread.interrupt();
         }
         encoder.close();
+    }
+
+    /** Largest relative move applied at once; a fast flick is a few hundred pixels. */
+    static final int MAX_DELTA = 4096;
+
+    private static int clampDelta(int d) {
+        return Math.max(-MAX_DELTA, Math.min(MAX_DELTA, d));
+    }
+
+    private static boolean isHere(int x, int y) {
+        return x == RemoteProtocol.HERE && y == RemoteProtocol.HERE;
+    }
+
+    private void replayHere(Runnable action) {
+        if (controlAllowed && frameWidth > 0) {
+            action.run();
+        }
     }
 
     private void replay(int x, int y, BiConsumer<Integer, Integer> action) {

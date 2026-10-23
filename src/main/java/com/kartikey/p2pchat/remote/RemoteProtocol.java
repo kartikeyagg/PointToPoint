@@ -13,7 +13,11 @@ import java.nio.ByteBuffer;
  * host   -> viewer : ScreenInfo, ControlState (reliable)   Tile fragments (datagrams)
  * viewer -> host   : ViewRequest, Refresh, MouseButton, MouseWheel, Key (reliable)
  *                    MouseMove (datagram: only the latest position matters)
+ *                    MouseDelta (datagram: relative motion for games that lock the pointer)
  * </pre>
+ *
+ * A {@link MouseButton} or {@link MouseWheel} whose x and y are both {@link #HERE} acts wherever the
+ * host's pointer is, without moving it; the viewer sends these in game mouse mode.
  *
  * The screen is cut into square tiles of {@link ScreenInfo#tileSize} pixels. A changed tile is
  * JPEG-encoded and sent as {@code fragCount} {@link Tile} datagrams that share one
@@ -30,13 +34,15 @@ public final class RemoteProtocol {
     public static final int MAX_TILE_DATA = PacketCodec.MAX_PAYLOAD - TILE_HEADER;
     /** Mouse buttons in {@link MouseButton#button}. */
     public static final int BUTTON_LEFT = 1, BUTTON_MIDDLE = 2, BUTTON_RIGHT = 3;
+    /** x and y of a button or wheel event that should not move the pointer. */
+    public static final int HERE = -1;
 
     private RemoteProtocol() {}
 
-    public enum Kind { SCREEN_INFO, TILE, CONTROL_STATE, VIEW_REQUEST, REFRESH, MOUSE_MOVE, MOUSE_BUTTON, MOUSE_WHEEL, KEY }
+    public enum Kind { SCREEN_INFO, TILE, CONTROL_STATE, VIEW_REQUEST, REFRESH, MOUSE_MOVE, MOUSE_BUTTON, MOUSE_WHEEL, KEY, MOUSE_DELTA }
 
     public sealed interface Message
-            permits ScreenInfo, Tile, ControlState, ViewRequest, Refresh, MouseMove, MouseButton, MouseWheel, Key {}
+            permits ScreenInfo, Tile, ControlState, ViewRequest, Refresh, MouseMove, MouseButton, MouseWheel, Key, MouseDelta {}
 
     /** Host screen size in pixels, tile size, and whether the viewer may send input. */
     public record ScreenInfo(int width, int height, int tileSize, boolean controlAllowed) implements Message {}
@@ -68,9 +74,12 @@ public final class RemoteProtocol {
     /** A {@link java.awt.event.KeyEvent} VK_ code going down or up. */
     public record Key(int keyCode, boolean pressed) implements Message {}
 
+    /** Pointer motion by ({@code dx}, {@code dy}) pixels from wherever it is on the host. */
+    public record MouseDelta(int dx, int dy) implements Message {}
+
     /** Tiles and pointer moves go as datagrams; everything else must arrive, in order. */
     public static boolean isReliable(Message m) {
-        return !(m instanceof Tile || m instanceof MouseMove);
+        return !(m instanceof Tile || m instanceof MouseMove || m instanceof MouseDelta);
     }
 
     public static byte[] encode(Message m) {
@@ -99,6 +108,8 @@ public final class RemoteProtocol {
             b = start(Kind.MOUSE_WHEEL, 12).putInt(w.x()).putInt(w.y()).putInt(w.rotation());
         } else if (m instanceof Key k) {
             b = start(Kind.KEY, 5).putInt(k.keyCode()).put(bool(k.pressed()));
+        } else if (m instanceof MouseDelta d) {
+            b = start(Kind.MOUSE_DELTA, 8).putInt(d.dx()).putInt(d.dy());
         } else {
             throw new IllegalArgumentException("unknown message " + m);
         }
@@ -135,6 +146,7 @@ public final class RemoteProtocol {
                 case MOUSE_BUTTON -> new MouseButton(b.getInt(), b.getInt(), b.get(), b.get() != 0);
                 case MOUSE_WHEEL -> new MouseWheel(b.getInt(), b.getInt(), b.getInt());
                 case KEY -> new Key(b.getInt(), b.get() != 0);
+                case MOUSE_DELTA -> new MouseDelta(b.getInt(), b.getInt());
             };
             if (b.hasRemaining()) {
                 throw new IllegalArgumentException("trailing bytes after " + Kind.values()[k]);

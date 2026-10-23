@@ -178,6 +178,23 @@ public final class DesktopViewer implements AutoCloseable {
         }
     }
 
+    /** Relative pointer motion, for games that lock the pointer (game mouse mode). */
+    public void mouseDelta(int dx, int dy) {
+        if (canControl() && (dx != 0 || dy != 0)) {
+            send(new RemoteProtocol.MouseDelta(dx, dy));
+        }
+    }
+
+    /** A click where the host's pointer is, without moving it. */
+    public void mouseButtonHere(int button, boolean pressed) {
+        mouseButton(RemoteProtocol.HERE, RemoteProtocol.HERE, button, pressed);
+    }
+
+    /** Scrolling where the host's pointer is, without moving it. */
+    public void mouseWheelHere(int rotation) {
+        mouseWheel(RemoteProtocol.HERE, RemoteProtocol.HERE, rotation);
+    }
+
     public void key(int keyCode, boolean pressed) {
         if (canControl()) {
             send(new RemoteProtocol.Key(keyCode, pressed));

@@ -71,6 +71,25 @@ therefore also build a small native helper, `target/screenstream`, and the host 
 - `./desktop.sh bench` prints `capture source: native helper` when the helper is in use.
 - `--java-capture` turns the helper off. `P2P_SCREENSTREAM=/path/to/helper` points at a different build.
 
+## Playing games (game mouse)
+
+First-person games, including browser games such as Krunker, lock the mouse pointer and read how
+far the mouse *moved*, not where it is. Normal remote control sends positions, so in those games
+the view spins or keeps pointing at the sky or the ground. Switch the viewer to **game mouse** for them:
+
+1. Start the game on the shared screen and click into it, so it locks the pointer.
+2. In the viewer, press **Game mouse** (bottom bar) or **Ctrl+Alt+G**. The pointer disappears,
+   stays inside the viewer window, and the viewer now sends only motion. Clicks and the wheel
+   act wherever the shared screen's pointer is.
+3. Press **Ctrl+Alt+G** again (or the **Release mouse** button) to get your pointer back. Switching
+   to another window releases it too.
+
+- Both computers need this version: an older host would click in the top-left corner.
+- On macOS the viewer moves its own pointer back to the window centre, which needs **Accessibility**
+  permission for the terminal app (System Settings → Privacy & Security → Accessibility). Without it
+  game mouse still works, but the motion stops when the pointer reaches the edge of the screen.
+- Escape still goes to the game (most games use it to release their own pointer lock).
+
 ## Slow picture?
 
 Run `./desktop.sh bench` on the computer that **shares** its screen. It connects to nobody and prints:
@@ -109,7 +128,7 @@ host: capture screen (native helper 30×/s, or java.awt.Robot 20×/s)
       → cut into 128×128 tiles → keep the tiles that changed
       → JPEG the changed tiles on all CPU cores → split into ≤1087-byte fragments → encrypted UDP datagrams
 viewer: reassemble fragments → decode → draw into its copy of the screen → paint scaled
-viewer input → MouseMove (datagram) / buttons, wheel, keys (reliable, in order) → host Robot
+viewer input → MouseMove or MouseDelta (datagram) / buttons, wheel, keys (reliable, in order) → host Robot
 ```
 
 - **Screen updates are datagrams.** A lost fragment just means that tile waits. The host resends
@@ -159,6 +178,7 @@ Messages are defined in `remote/RemoteProtocol.java`:
 | `remote/NativeScreen`, `native/macos`, `native/linux` | fast capture through the `screenstream` helper process |
 | `remote/DesktopViewer`, `TileAssembler` | fragment reassembly, version ordering, the viewer's copy of the screen |
 | `remote/ViewerWindow`, `HostWindow`, `DesktopLauncher` | Swing windows |
+| `remote/GameMouse` | game mouse mode: keeps the viewer pointer centred and turns it into motion |
 | `remote/RemoteProtocol`, `Transport`, `ScreenSource`, `InputSink`, `HostSettings` | shared contracts |
 
 ## From an iPad or phone (browser, no Java needed)
