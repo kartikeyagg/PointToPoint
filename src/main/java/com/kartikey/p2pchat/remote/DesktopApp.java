@@ -78,8 +78,8 @@ public final class DesktopApp {
     static final int NATIVE_FPS = 30;
 
     /**
-     * The fastest screen source available: the native helper on macOS (ScreenCaptureKit),
-     * otherwise {@link java.awt.Robot}. The helper must report the same size as Robot's screen,
+     * The fastest screen source available: the native helper (ScreenCaptureKit on macOS, MIT-SHM
+     * on Linux X11), otherwise {@link java.awt.Robot}. The helper must report the same size as Robot's screen,
      * because input coordinates are host-frame pixels.
      */
     static ScreenSource openScreen(Options o, RobotScreen robot) {
@@ -105,13 +105,14 @@ public final class DesktopApp {
         }
     }
 
-    /** {@code $P2P_SCREENSTREAM}, or {@code screenstream} next to the jar (macOS only). */
+    /** {@code $P2P_SCREENSTREAM}, or {@code screenstream} next to the jar (macOS and Linux). */
     static java.nio.file.Path helperPath() {
         String override = System.getenv("P2P_SCREENSTREAM");
         if (override != null && !override.isBlank()) {
             return java.nio.file.Path.of(override);
         }
-        if (!System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("mac")) {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        if (!os.contains("mac") && !os.contains("linux")) {
             return null;
         }
         try {
