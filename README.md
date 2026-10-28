@@ -1,3 +1,4 @@
+| `conf/*` | conference mode core (policy, keys, signed streams, relay overlay, audio), see [CONFERENCE.md](CONFERENCE.md) |
 # PointToPoint — serverless P2P chat in Java
 
 Two devices that know each other's address chat directly over the internet.
@@ -12,6 +13,8 @@ Chat packets go **straight from one device to the other**. There is no chat serv
 - Small Swing GUI, plus a terminal mode
 - **Remote desktop** (like AnyDesk, without a server): share your screen, or see and control the
   other computer. See **[REMOTE_DESKTOP.md](REMOTE_DESKTOP.md)**
+- **Conference mode** (in progress): serverless meetings for up to ~100k people where participants
+  relay for each other and cannot tamper with what they forward. See **[CONFERENCE.md](CONFERENCE.md)**
 
 ## Quick start
 
