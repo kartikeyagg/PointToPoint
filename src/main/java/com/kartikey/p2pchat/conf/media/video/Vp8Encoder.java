@@ -30,6 +30,15 @@ public final class Vp8Encoder implements Codecs.VideoEncoder {
     private boolean needKey;
     private boolean closed;
 
+    static {
+        // libvpx prints a version banner per context at INFO level
+        try {
+            avutil.av_log_set_level(avutil.AV_LOG_ERROR);
+        } catch (Throwable ignored) {
+            // natives missing: the constructor will fail with a clearer error
+        }
+    }
+
     public Vp8Encoder(int width, int height, int bitrate, int fps) {
         this.width = width & ~1;
         this.height = height & ~1;
@@ -61,13 +70,18 @@ public final class Vp8Encoder implements Codecs.VideoEncoder {
         ctx.bit_rate(bitrate);
         ctx.rc_max_rate(bitrate);
         ctx.rc_buffer_size(Math.max(bitrate / 4, 10_000)); // ~250 ms of video
-        ctx.thread_count(Math.min(4, Runtime.getRuntime().availableProcessors()));
+        // threads scale with resolution: more only adds sync overhead on small pictures
+        int px = width * height;
+        int want = px >= 900_000 ? 4 : px >= 200_000 ? 2 : 1;
+        ctx.thread_count(Math.min(want, Runtime.getRuntime().availableProcessors()));
         BytePointer priv = new BytePointer(ctx.priv_data());
         avutil.av_opt_set(priv, "deadline", "realtime", 0);
-        avutil.av_opt_set(priv, "cpu-used", "8", 0);
+        avutil.av_opt_set(priv, "cpu-used", "16", 0);
         avutil.av_opt_set(priv, "lag-in-frames", "0", 0);
         avutil.av_opt_set(priv, "error-resilient", "1", 0);
         avutil.av_opt_set(priv, "auto-alt-ref", "0", 0);
+        avutil.av_opt_set(priv, "noise-sensitivity", "0", 0);
+        avutil.av_opt_set(priv, "static-thresh", "100", 0);
         int r = avcodec.avcodec_open2(ctx, codec, (AVDictionary) null);
         if (r < 0) {
             avcodec.avcodec_free_context(ctx);
