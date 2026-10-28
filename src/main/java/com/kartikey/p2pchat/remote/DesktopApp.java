@@ -83,7 +83,12 @@ public final class DesktopApp {
      * because input coordinates are host-frame pixels.
      */
     static ScreenSource openScreen(Options o, RobotScreen robot) {
-        java.nio.file.Path helper = o.javaCapture ? null : helperPath();
+        return openScreen(o.javaCapture, robot);
+    }
+
+    /** {@link #openScreen(Options, RobotScreen)} for callers outside the desktop app (conference screen share). */
+    public static ScreenSource openScreen(boolean javaCapture, RobotScreen robot) {
+        java.nio.file.Path helper = javaCapture ? null : helperPath();
         if (helper == null || !java.nio.file.Files.isExecutable(helper)) {
             return robot;
         }

@@ -2,12 +2,10 @@ package com.kartikey.p2pchat.conf.media.device;
 
 import com.kartikey.p2pchat.conf.media.I420;
 import com.kartikey.p2pchat.conf.media.VideoFrame;
-import com.kartikey.p2pchat.remote.NativeScreen;
+import com.kartikey.p2pchat.remote.DesktopApp;
 import com.kartikey.p2pchat.remote.RobotScreen;
 import com.kartikey.p2pchat.remote.ScreenSource;
 import java.awt.AWTException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.function.Consumer;
 
 /** Screen share as I420 frames at a fixed rate, downscaled so the encoder never sees more than {@code maxWidth}. */
@@ -32,16 +30,7 @@ public final class ScreenCapture implements AutoCloseable {
      * when present (much faster), otherwise {@link RobotScreen}.
      */
     public static ScreenSource defaultSource() throws AWTException {
-        RobotScreen robot = new RobotScreen();
-        String env = System.getenv("P2P_SCREENSTREAM");
-        if (env != null && !env.isBlank() && Files.isExecutable(Path.of(env))) {
-            try {
-                return NativeScreen.start(Path.of(env), 15, robot, 5000);
-            } catch (java.io.IOException e) {
-                // fall through to Robot
-            }
-        }
-        return robot;
+        return DesktopApp.openScreen(false, new RobotScreen());
     }
 
     public synchronized void start() {
