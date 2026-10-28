@@ -79,12 +79,12 @@ public final class StunClient {
     }
 
     /** Builds a binding request carrying the given 12-byte transaction id. */
-    static byte[] bindingRequest(byte[] txId) {
+    public static byte[] bindingRequest(byte[] txId) {
         return ByteBuffer.allocate(20).putShort(BINDING_REQUEST).putShort((short) 0)
                 .putInt(MAGIC_COOKIE).put(txId).array();
     }
 
-    static byte[] newTransactionId() {
+    public static byte[] newTransactionId() {
         byte[] id = new byte[12];
         RANDOM.nextBytes(id);
         return id;
@@ -97,7 +97,7 @@ public final class StunClient {
     }
 
     /** Extracts the mapped address from a binding success response, or null. */
-    static InetSocketAddress parseResponse(byte[] data, int length, byte[] expectedTxId) {
+    public static InetSocketAddress parseResponse(byte[] data, int length, byte[] expectedTxId) {
         if (!isStunMessage(data, length)) {
             return null;
         }
