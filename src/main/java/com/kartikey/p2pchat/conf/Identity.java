@@ -55,6 +55,11 @@ public final class Identity {
         return Crypto.x25519(agree.getPrivate(), peer.agreeKey());
     }
 
+    /** X25519 shared secret with any X.509-encoded X25519 public key (e.g. an ephemeral one). */
+    public byte[] agree(byte[] x25519Public) {
+        return Crypto.x25519(agree.getPrivate(), x25519Public);
+    }
+
     /** {@code len(2) | ed25519 PKCS#8 | len(2) | x25519 PKCS#8}; keep it secret. */
     public byte[] exportPrivate() {
         byte[] s = sign.getPrivate().getEncoded(), a = agree.getPrivate().getEncoded();

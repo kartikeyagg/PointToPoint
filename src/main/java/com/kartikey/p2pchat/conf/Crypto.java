@@ -103,7 +103,7 @@ public final class Crypto {
         }
     }
 
-    static boolean verify(PublicKey key, byte[] message, byte[] signature) {
+    public static boolean verify(PublicKey key, byte[] message, byte[] signature) {
         if (signature == null || signature.length != SIGNATURE_LEN) {
             return false;
         }
@@ -117,7 +117,7 @@ public final class Crypto {
         }
     }
 
-    static byte[] x25519(PrivateKey own, byte[] peerEncoded) {
+    public static byte[] x25519(PrivateKey own, byte[] peerEncoded) {
         try {
             PublicKey pk = KeyFactory.getInstance("X25519").generatePublic(new X509EncodedKeySpec(peerEncoded));
             KeyAgreement ka = KeyAgreement.getInstance("X25519");
