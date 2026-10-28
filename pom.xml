@@ -12,9 +12,44 @@
     <properties>
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <javacv.version>1.5.11</javacv.version>
+        <ffmpeg.version>7.1-${javacv.version}</ffmpeg.version>
+        <!-- set by the OS profiles; empty means "classes only" -->
+        <native.classifier></native.classifier>
     </properties>
 
     <dependencies>
+        <!-- Opus audio, VP8 video and camera capture for conference mode (FFmpeg via JavaCPP).
+             The OS profiles below keep the download to this machine's natives;
+             build with -Pall-platforms for a jar that runs everywhere. -->
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>javacv</artifactId>
+            <version>${javacv.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>ffmpeg</artifactId>
+            <version>${ffmpeg.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>ffmpeg</artifactId>
+            <version>${ffmpeg.version}</version>
+            <classifier>${native.classifier}</classifier>
+        </dependency>
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>javacpp</artifactId>
+            <version>${javacv.version}</version>
+            <classifier>${native.classifier}</classifier>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
@@ -44,10 +79,69 @@
                     <archive>
                         <manifest>
                             <mainClass>com.kartikey.p2pchat.Main</mainClass>
+                            <addClasspath>true</addClasspath>
+                            <classpathPrefix>lib/</classpathPrefix>
                         </manifest>
                     </archive>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.6.1</version>
+                <executions>
+                    <execution>
+                        <id>copy-libs</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>copy-dependencies</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.directory}/lib</outputDirectory>
+                            <includeScope>runtime</includeScope>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <id>mac-arm64</id>
+            <activation><os><family>mac</family><arch>aarch64</arch></os></activation>
+            <properties><native.classifier>macosx-arm64</native.classifier></properties>
+        </profile>
+        <profile>
+            <id>mac-x64</id>
+            <activation><os><family>mac</family><arch>x86_64</arch></os></activation>
+            <properties><native.classifier>macosx-x86_64</native.classifier></properties>
+        </profile>
+        <profile>
+            <id>linux-x64</id>
+            <activation><os><name>linux</name><arch>amd64</arch></os></activation>
+            <properties><native.classifier>linux-x86_64</native.classifier></properties>
+        </profile>
+        <profile>
+            <id>linux-arm64</id>
+            <activation><os><name>linux</name><arch>aarch64</arch></os></activation>
+            <properties><native.classifier>linux-arm64</native.classifier></properties>
+        </profile>
+        <profile>
+            <id>windows-x64</id>
+            <activation><os><family>windows</family><arch>amd64</arch></os></activation>
+            <properties><native.classifier>windows-x86_64</native.classifier></properties>
+        </profile>
+        <profile>
+            <!-- every OS's natives in target/lib: one build that runs on mac, linux and windows -->
+            <id>all-platforms</id>
+            <dependencies>
+                <dependency>
+                    <groupId>org.bytedeco</groupId>
+                    <artifactId>ffmpeg-platform</artifactId>
+                    <version>${ffmpeg.version}</version>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
 </project>
