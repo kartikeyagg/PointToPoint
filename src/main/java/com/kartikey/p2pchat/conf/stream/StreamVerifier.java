@@ -29,8 +29,8 @@ public final class StreamVerifier {
     private final ArrayDeque<Pending> pending = new ArrayDeque<>();
     private final TreeMap<Long, Manifest> manifests = new TreeMap<>();
     /** Recently released seqs, for replay detection; bounded so a long stream cannot grow it. */
-    private final Map<Long, Boolean> released = new LinkedHashMap<>() {
-        @Override protected boolean removeEldestEntry(Map.Entry<Long, Boolean> e) {
+    private final Map<Long, byte[]> released = new LinkedHashMap<>() {
+        @Override protected boolean removeEldestEntry(Map.Entry<Long, byte[]> e) {
             return size() > MAX_RELEASED;
         }
     };
@@ -90,6 +90,20 @@ public final class StreamVerifier {
             forgedManifests++;
             return;
         }
+        // Overlapping manifests must agree with what we already trust; the sender never signs two
+        // different hashes for one seq, so a disagreement means forgery (or a compromised key).
+        for (int i = 0; i < m.hashes().size(); i++) {
+            long seq = m.firstSeq() + i;
+            byte[] known = released.get(seq);
+            if (known == null) {
+                Manifest c = covering(seq);
+                if (c != null) known = c.hashes().get((int) (seq - c.firstSeq()));
+            }
+            if (known != null && !MessageDigest.isEqual(known, m.hashes().get(i))) {
+                forgedManifests++;
+                return;
+            }
+        }
         manifests.put(m.firstSeq(), m);
         while (manifests.size() > MAX_MANIFESTS) manifests.pollFirstEntry();
         for (Iterator<Pending> it = pending.iterator(); it.hasNext(); ) {
@@ -103,10 +117,11 @@ public final class StreamVerifier {
     }
 
     private Manifest covering(long seq) {
-        Map.Entry<Long, Manifest> e = manifests.floorEntry(seq);
-        if (e == null) return null;
-        Manifest m = e.getValue();
-        return seq < m.firstSeq() + m.hashes().size() ? m : null;
+        for (Manifest m : manifests.headMap(seq, true).descendingMap().values()) {
+            if (seq < m.firstSeq() + m.hashes().size()) return m;
+            if (m.firstSeq() < seq - Manifest.MAX_HASHES) break;
+        }
+        return null;
     }
 
     private static boolean matches(Manifest m, long seq, byte[] packet) {
@@ -114,7 +129,7 @@ public final class StreamVerifier {
     }
 
     private void release(long seq, byte[] packet, List<byte[]> out) {
-        released.put(seq, Boolean.TRUE);
+        released.put(seq, Manifest.hash(packet));
         verified++;
         out.add(packet);
     }
