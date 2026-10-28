@@ -117,7 +117,7 @@ class MediaReliabilityTest {
                 100 * delivered, jitter.concealed(), jitter.late(), jitter.targetDelayMillis(), receiver.rejected());
         assertEquals(0, receiver.verifier().tampered());
         // network loss alone is 10%; signature batching must not turn that into much more
-        assertTrue(delivered > 0.85, "only " + delivered + " of audio frames played");
+        assertTrue(delivered > 0.88, "only " + delivered + " of audio frames played");
     }
 
     @Test
