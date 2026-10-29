@@ -68,7 +68,9 @@ public final class OpusDecoder implements Codecs.AudioDecoder {
     }
 
     private short[] decodePacket(byte[] data) {
-        av_new_packet(packet, data.length);
+        if (av_new_packet(packet, data.length) < 0) {
+            return null;
+        }
         packet.data().put(data);
         int r = avcodec_send_packet(ctx, packet);
         av_packet_unref(packet);
