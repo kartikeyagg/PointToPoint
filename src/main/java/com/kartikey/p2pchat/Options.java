@@ -12,6 +12,8 @@ public final class Options {
     public static final int DESKTOP_PORT = DEFAULT_PORT + 1;
     /** Default TCP port of the browser page ({@code --web}). */
     public static final int DEFAULT_WEB_PORT = 7285;
+    /** Default UDP port of conference mode (7000 + day of year it was introduced). */
+    public static final int CONFERENCE_PORT = 7302;
 
     public String peerHost;
     public int peerPort = DEFAULT_PORT;
@@ -35,6 +37,12 @@ public final class Options {
     public int webPort = -1;
     /** Address the web page listens on; loopback unless the user opts in to more. */
     public String webBind = "127.0.0.1";
+    /** Conference mode: "host", "join", "" (launcher window), null (not a conference). */
+    public String conference;
+    /** Conference: meeting title when hosting, invite code when joining. */
+    public String conferenceArg;
+    /** Conference: display name shown to others. */
+    public String name;
 
     public static Options parse(String[] args) {
         Options o = new Options();
@@ -79,8 +87,23 @@ public final class Options {
                 }
                 case "--web-bind" -> o.webBind = value(args, ++i, a);
                 case "--key" -> o.passphrase = value(args, ++i, a);
+                case "--conference" -> {
+                    o.conference = "";
+                    if (i + 1 < args.length && (args[i + 1].equals("host") || args[i + 1].equals("join"))) {
+                        o.conference = args[++i];
+                        if (o.conference.equals("join")) {
+                            o.conferenceArg = value(args, ++i, "--conference join");
+                        } else if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
+                            o.conferenceArg = args[++i];
+                        }
+                    }
+                }
+                case "--name" -> o.name = value(args, ++i, a);
                 default -> throw new IllegalArgumentException("unknown option: " + a);
             }
+        }
+        if (o.conference != null) {
+            o.localPort = localPortSet ? o.localPort : CONFERENCE_PORT;
         }
         if (o.desktop != null) {
             o.peerPort = peerPortSet ? o.peerPort : DESKTOP_PORT;
@@ -119,9 +142,15 @@ public final class Options {
                                       LAN address, or 0.0.0.0, to reach it from another device)
                   --view-only         page can watch but not control
 
+                Conference (many people, no server; default port %4$d):
+                  --conference                 open the conference launcher window
+                  --conference host [title]    start a meeting and print its invite code
+                  --conference join <invite>   join a meeting with an invite code
+                  --name <name>                name shown to the others
+
                 Run --whoami first on both devices and exchange the printed ip:port.
                 Then start both at roughly the same time, each pointing at the other.
-                """.formatted(DEFAULT_PORT, DESKTOP_PORT, DEFAULT_WEB_PORT);
+                """.formatted(DEFAULT_PORT, DESKTOP_PORT, DEFAULT_WEB_PORT, CONFERENCE_PORT);
     }
 
     /** Accepts host, host:port, IPv6 literal, or [IPv6]:port. */
