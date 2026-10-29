@@ -20,7 +20,8 @@ import java.util.function.LongSupplier;
  * <p>The seq counter is shared by all layers and fragments of the stream rather than kept per
  * layer: the single {@link StreamSigner} batches consecutive seqs and the verifier tracks seqs per
  * stream, so interleaved per-layer counters would break every batch. Seqs are still strictly
- * monotonic and never reused, which is what {@link GroupCipher}'s nonce needs. Frame ids are
+ * monotonic and never reused within a session, which is what {@link GroupCipher}'s nonce needs; a
+ * restarted sender gets a new session (and so a new key) because seq starts at 0 again. Frame ids are
  * per layer.
  */
 public final class MediaSender {
@@ -28,6 +29,7 @@ public final class MediaSender {
 
     private final MediaHeader.Kind kind;
     private final long streamId;
+    private final long session = StreamIds.newSession();
     private final LongSupplier epochSupplier;
     private final Function<Long, Optional<byte[]>> keyForEpoch;
     private final Consumer<byte[]> out;
@@ -44,7 +46,7 @@ public final class MediaSender {
         this.epochSupplier = epochSupplier;
         this.keyForEpoch = keyForEpoch;
         this.out = out;
-        this.signer = new StreamSigner(me, streamId, BATCH);
+        this.signer = new StreamSigner(me, streamId, session, BATCH, 2 * BATCH);
     }
 
     public synchronized void sendAudio(byte[] opusPacket, short[] pcmForLevel) {
@@ -71,7 +73,7 @@ public final class MediaSender {
             cipher = new GroupCipher(key.get());
             ciphers.put(epoch, cipher);
         }
-        MediaHeader h = new MediaHeader(kind, streamId, (int) epoch, seq++, layer, 0, level, flags);
+        MediaHeader h = new MediaHeader(kind, streamId, (int) epoch, seq++, layer, 0, level, flags, session);
         for (byte[] p : signer.onSend(cipher.seal(h, payload))) out.accept(p);
     }
 

@@ -14,12 +14,18 @@ import java.util.TreeMap;
  * Receiver-side gate: a media packet is released only if it matches a hash in a manifest whose
  * signature verifies against the sender. Packets that arrive before their manifest are buffered
  * (bounded by count and age). Methods are synchronised.
+ *
+ * <p>Replay defences: the current sender session is learned only from a validly signed manifest;
+ * traffic from an older session is dropped and a newer session resets all state. Within a session,
+ * a high-water mark rejects seqs more than {@code MAX_RELEASED} behind the newest verified one, so
+ * the bounded released-set cannot be bypassed by replaying very old packets.
  */
 public final class StreamVerifier {
     private static final int MAX_MANIFESTS = 256;
+    /** Size of the replay window: released seqs remembered, and how far behind the high-water mark is accepted. */
     private static final int MAX_RELEASED = 8192;
 
-    private record Pending(byte[] packet, long seq, long arrived) {}
+    private record Pending(byte[] packet, long seq, long session, long arrived) {}
 
     private final ParticipantId sender;
     private final long streamId;
@@ -28,12 +34,15 @@ public final class StreamVerifier {
 
     private final ArrayDeque<Pending> pending = new ArrayDeque<>();
     private final TreeMap<Long, Manifest> manifests = new TreeMap<>();
-    /** Recently released seqs, for replay detection; bounded so a long stream cannot grow it. */
     private final Map<Long, byte[]> released = new LinkedHashMap<>() {
         @Override protected boolean removeEldestEntry(Map.Entry<Long, byte[]> e) {
             return size() > MAX_RELEASED;
         }
     };
+    private boolean haveSession;
+    private long session;
+    private boolean haveHigh;
+    private long highSeq;
 
     private long verified, tampered, forgedManifests, unverifiedDropped, replays;
 
@@ -63,19 +72,30 @@ public final class StreamVerifier {
             onManifest(packet, out);
             return out;
         }
-        if (released.containsKey(h.seq())) {
+        if (haveSession && h.session() < session) {
             replays++;
             return out;
         }
-        Manifest m = covering(h.seq());
-        if (m != null) {
-            if (matches(m, h.seq(), packet)) release(h.seq(), packet, out);
-            else tampered++;
-            return out;
+        if (haveSession && h.session() == session) {
+            if (belowFloor(h.seq()) || released.containsKey(h.seq())) {
+                replays++;
+                return out;
+            }
+            Manifest m = covering(h.seq());
+            if (m != null) {
+                if (matches(m, h.seq(), packet)) release(h.seq(), packet, out);
+                else tampered++;
+                return out;
+            }
         }
-        pending.addLast(new Pending(packet, h.seq(), now));
+        // Unknown session, or a newer one not yet proven by a manifest: wait for a signed manifest.
+        pending.addLast(new Pending(packet, h.seq(), h.session(), now));
         evict(now);
         return out;
+    }
+
+    private boolean belowFloor(long seq) {
+        return haveHigh && seq < highSeq - MAX_RELEASED;
     }
 
     private void onManifest(byte[] packet, List<byte[]> out) {
@@ -88,6 +108,23 @@ public final class StreamVerifier {
         }
         if (m.streamId() != streamId || !m.verify(sender)) {
             forgedManifests++;
+            return;
+        }
+        if (haveSession && m.session() < session) { // genuine but stale: a relay replaying an old run
+            replays++;
+            return;
+        }
+        if (!haveSession || m.session() > session) {
+            // A newer session, proven by the sender's signature: forget the old run entirely.
+            session = m.session();
+            haveSession = true;
+            haveHigh = false;
+            manifests.clear();
+            released.clear();
+            pending.removeIf(p -> p.session < session);
+        }
+        if (belowFloor(m.firstSeq())) {
+            replays++;
             return;
         }
         // Overlapping manifests must agree with what we already trust; the sender never signs two
@@ -106,13 +143,21 @@ public final class StreamVerifier {
         }
         manifests.put(m.firstSeq(), m);
         while (manifests.size() > MAX_MANIFESTS) manifests.pollFirstEntry();
+        raiseHigh(m.firstSeq() + m.hashes().size() - 1);
         for (Iterator<Pending> it = pending.iterator(); it.hasNext(); ) {
             Pending p = it.next();
-            if (p.seq < m.firstSeq() || p.seq >= m.firstSeq() + m.hashes().size()) continue;
+            if (p.session != session || p.seq < m.firstSeq() || p.seq >= m.firstSeq() + m.hashes().size()) continue;
             it.remove();
             if (released.containsKey(p.seq)) replays++;
             else if (matches(m, p.seq, p.packet)) release(p.seq, p.packet, out);
             else tampered++;
+        }
+    }
+
+    private void raiseHigh(long seq) {
+        if (!haveHigh || seq > highSeq) {
+            highSeq = seq;
+            haveHigh = true;
         }
     }
 

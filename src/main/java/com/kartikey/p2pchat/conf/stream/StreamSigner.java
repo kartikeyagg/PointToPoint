@@ -14,6 +14,7 @@ import java.util.List;
 public final class StreamSigner {
     private final Identity sender;
     private final long streamId;
+    private final long session;
     private final int batchSize;
     private final int window;
     /** Hashes of the most recent consecutive run (at most {@code window}); first one has seq histFirst. */
@@ -27,10 +28,16 @@ public final class StreamSigner {
     }
 
     public StreamSigner(Identity sender, long streamId, int batchSize, int window) {
+        this(sender, streamId, 0, batchSize, window);
+    }
+
+    /** @param session must match the session field of every packet sealed for this stream */
+    public StreamSigner(Identity sender, long streamId, long session, int batchSize, int window) {
         if (batchSize < 1 || batchSize > Manifest.MAX_HASHES) throw new IllegalArgumentException("batchSize");
         if (window < batchSize || window > Manifest.MAX_HASHES) throw new IllegalArgumentException("window");
         this.sender = sender;
         this.streamId = streamId;
+        this.session = session;
         this.batchSize = batchSize;
         this.window = window;
     }
@@ -45,7 +52,7 @@ public final class StreamSigner {
      */
     public synchronized List<byte[]> onSend(byte[] sealedPacket, long nowMillis) {
         MediaHeader h = MediaHeader.decode(sealedPacket);
-        if (h.streamId() != streamId || h.kind() == MediaHeader.Kind.MANIFEST)
+        if (h.streamId() != streamId || h.session() != session || h.kind() == MediaHeader.Kind.MANIFEST)
             throw new IllegalArgumentException("packet does not belong to this stream");
         List<byte[]> out = new ArrayList<>(3);
         if (!hist.isEmpty() && h.seq() != histFirst + hist.size()) {
@@ -69,7 +76,7 @@ public final class StreamSigner {
     public synchronized List<byte[]> flush() {
         List<byte[]> out = new ArrayList<>(1);
         if (uncovered == 0) return out;
-        out.add(Manifest.sign(sender, streamId, histFirst, new ArrayList<>(hist)).encode());
+        out.add(Manifest.sign(sender, streamId, session, histFirst, new ArrayList<>(hist)).encode());
         uncovered = 0;
         return out;
     }
