@@ -410,8 +410,10 @@ public final class Forwarder implements PeerNetwork.Listener {
     private void onAdopt(ParticipantId from, TreeMessages.Adopt m) {
         if (m.stripe() >= cfg.maxStripes() || m.child().equals(net.self())) return;
         Stream s = streams.get(m.streamId());
-        if (!fromCoordinator(from, s)) return;
-        if (s == null) s = stream(m.streamId(), false);
+        // our own coordinator may place children in a stream before we publish it: keep them
+        boolean local = from.equals(net.self());
+        if (!local && !fromCoordinator(from, s)) return;
+        if (s == null) s = stream(m.streamId(), true);
         if (s == null) return;
         Stripe st = s.stripes.computeIfAbsent(m.stripe(), x -> new Stripe());
         if (!st.children.containsKey(m.child()) && st.children.size() >= cfg.maxChildren()) return;

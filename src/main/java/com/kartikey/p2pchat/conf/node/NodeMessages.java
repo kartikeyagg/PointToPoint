@@ -17,8 +17,10 @@ import java.util.List;
  */
 final class NodeMessages {
 
-    static final int JOIN_REQ = 0x40, JOIN_OK = 0x41, JOIN_DENIED = 0x42, HELLO = 0x43;
+    static final int JOIN_REQ = 0x40, JOIN_OK = 0x41, JOIN_DENIED = 0x42, HELLO = 0x43, ROSTER_REQ = 0x44, ROSTER = 0x45, REMOVED = 0x46;
     static final int MAX_CONTACTS = 16;
+    /** A newcomer learns at most this many earlier participants from one peer (admins and publishers first). */
+    static final int MAX_ROSTER_SYNC = 2_000, MAX_ROSTER_PAGE_BYTES = 60_000, MAX_ROSTER_PAGE = 400;
 
     private NodeMessages() {}
 
@@ -113,6 +115,67 @@ final class NodeMessages {
     static Presence hello(byte[] m) {
         ByteBuffer b = start(m, HELLO);
         return Presence.decode(take(b, b.remaining()));
+    }
+
+    /** Asks for the sender's roster unless it matches ours ({@code count} entries, XOR of id hashes). */
+    static byte[] rosterReq(int count, long digest) {
+        return ByteBuffer.allocate(1 + 4 + 8).put((byte) ROSTER_REQ).putInt(count).putLong(digest).array();
+    }
+
+    record RosterDigest(int count, long digest) {}
+
+    static RosterDigest rosterReq(byte[] m) {
+        ByteBuffer b = start(m, ROSTER_REQ);
+        try {
+            RosterDigest d = new RosterDigest(b.getInt(), b.getLong());
+            end(b);
+            return d;
+        } catch (BufferUnderflowException e) {
+            throw new IllegalArgumentException("truncated roster request");
+        }
+    }
+
+    static byte[] roster(List<Presence> page) {
+        List<byte[]> enc = new ArrayList<>(page.size());
+        int size = 1 + 2;
+        for (Presence p : page) {
+            byte[] e = p.encode();
+            enc.add(e);
+            size += 2 + e.length;
+        }
+        ByteBuffer b = ByteBuffer.allocate(size).put((byte) ROSTER).putShort((short) enc.size());
+        for (byte[] e : enc) {
+            b.putShort((short) e.length).put(e);
+        }
+        return b.array();
+    }
+
+    static List<Presence> roster(byte[] m) {
+        ByteBuffer b = start(m, ROSTER);
+        try {
+            int n = b.getShort() & 0xffff;
+            if (n > MAX_ROSTER_PAGE) {
+                throw new IllegalArgumentException("roster page too large");
+            }
+            List<Presence> out = new ArrayList<>(n);
+            for (int i = 0; i < n; i++) {
+                out.add(Presence.decode(take(b, b.getShort() & 0xffff)));
+            }
+            end(b);
+            return out;
+        } catch (BufferUnderflowException e) {
+            throw new IllegalArgumentException("truncated roster");
+        }
+    }
+
+    /** The signed admin command that removed (or ended) us, sent just before our links close. */
+    static byte[] removed(byte[] command) {
+        return ByteBuffer.allocate(1 + command.length).put((byte) REMOVED).put(command).array();
+    }
+
+    static byte[] removedCommand(byte[] m) {
+        ByteBuffer b = start(m, REMOVED);
+        return take(b, b.remaining());
     }
 
     private static ByteBuffer start(byte[] m, int type) {
