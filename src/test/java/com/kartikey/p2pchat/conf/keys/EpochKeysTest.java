@@ -158,4 +158,58 @@ class EpochKeysTest {
         assertTrue(EpochSchedule.due(1000, 1001, true));
         assertEquals(32, EpochSchedule.newKey().length);
     }
+
+    @Test
+    void epochPinningRejected() {
+        Identity admin = Identity.generate(), me = Identity.generate();
+        KeyRing ring = new KeyRing(meeting);
+        byte[] k = EpochSchedule.newKey();
+        assertEquals(KeyRing.Result.TOO_FAR, ring.accept(
+                EpochBundle.create(admin, meeting, Long.MAX_VALUE, k, List.of(me.id()), 10, 5L).get(0), me, p -> true));
+        assertEquals(KeyRing.Result.TOO_FAR, ring.accept(
+                EpochBundle.create(admin, meeting, 0x100000000L, k, List.of(me.id()), 10, 5L).get(0), me, p -> true));
+        assertEquals(KeyRing.Result.ACCEPTED, ring.accept(
+                EpochBundle.create(admin, meeting, 10, k, List.of(me.id()), 10, 5L).get(0), me, p -> true));
+        assertEquals(KeyRing.Result.TOO_FAR, ring.accept(
+                EpochBundle.create(admin, meeting, 15, k, List.of(me.id()), 10, 5L).get(0), me, p -> true));
+        assertEquals(KeyRing.Result.ACCEPTED, ring.accept(
+                EpochBundle.create(admin, meeting, 14, k, List.of(me.id()), 10, 5L).get(0), me, p -> true));
+    }
+
+    @Test
+    void sameEpochSplitConvergesOnLowestIssuer() {
+        Identity a1 = Identity.generate(), a2 = Identity.generate(), me = Identity.generate();
+        Identity low = a1.id().compareTo(a2.id()) < 0 ? a1 : a2;
+        Identity high = low == a1 ? a2 : a1;
+        byte[] kl = EpochSchedule.newKey(), kh = EpochSchedule.newKey();
+        EpochBundle bl = EpochBundle.create(low, meeting, 3, kl, List.of(me.id()), 10, 5L).get(0);
+        EpochBundle bh = EpochBundle.create(high, meeting, 3, kh, List.of(me.id()), 10, 5L).get(0);
+        // high first, then low replaces
+        KeyRing r1 = new KeyRing(meeting);
+        assertEquals(KeyRing.Result.ACCEPTED, r1.accept(bh, me, p -> true));
+        assertEquals(KeyRing.Result.REPLACED, r1.accept(bl, me, p -> true));
+        assertArrayEquals(kl, r1.key(3).orElseThrow());
+        assertEquals(2, r1.candidates(3).size());
+        assertArrayEquals(kh, r1.candidates(3).get(1));
+        assertEquals(KeyRing.Result.DUPLICATE, r1.accept(bl, me, p -> true));
+        // low first, high does not replace
+        KeyRing r2 = new KeyRing(meeting);
+        assertEquals(KeyRing.Result.ACCEPTED, r2.accept(bl, me, p -> true));
+        assertEquals(KeyRing.Result.DUPLICATE, r2.accept(bh, me, p -> true));
+        assertArrayEquals(kl, r2.key(3).orElseThrow());
+        assertArrayEquals(kl, r2.candidates(3).get(0));
+        assertArrayEquals(kh, r2.candidates(3).get(1));
+    }
+
+    @Test
+    void signatureIsDomainSeparated() {
+        Identity admin = Identity.generate(), me = Identity.generate();
+        byte[] enc = EpochBundle.create(admin, meeting, 1, EpochSchedule.newKey(), List.of(me.id()), 10, 5L)
+                .get(0).encode();
+        byte[] body = java.util.Arrays.copyOf(enc, enc.length - 64);
+        byte[] sig = admin.sign(body);
+        byte[] forged = java.util.Arrays.copyOf(body, enc.length);
+        System.arraycopy(sig, 0, forged, body.length, 64);
+        assertFalse(EpochBundle.decode(forged).verify());
+    }
 }

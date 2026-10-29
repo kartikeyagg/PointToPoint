@@ -71,15 +71,28 @@ public final class Simulcast implements AutoCloseable {
                 pending.add(pool.submit(job));
             }
         }
+        // Every job must finish before returning: a pool thread may be inside a native codec context
+        // that the next encode() or close() would use or free.
+        boolean interrupted = false;
+        Throwable failure = null;
         for (Future<?> f : pending) {
-            try {
-                f.get();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            } catch (ExecutionException e) {
-                throw new IllegalStateException(e.getCause());
+            while (true) {
+                try {
+                    f.get();
+                    break;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                } catch (ExecutionException e) {
+                    failure = e.getCause();
+                    break;
+                }
             }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        if (failure != null) {
+            throw new IllegalStateException(failure);
         }
         return Arrays.asList(out);
     }
@@ -132,6 +145,17 @@ public final class Simulcast implements AutoCloseable {
     @Override
     public synchronized void close() {
         pool.shutdown();
+        boolean interrupted = false;
+        while (!pool.isTerminated()) {
+            try {
+                pool.awaitTermination(1, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
         for (int i = 0; i < encoders.length; i++) {
             if (encoders[i] != null) {
                 encoders[i].close();

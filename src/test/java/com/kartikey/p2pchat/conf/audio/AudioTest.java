@@ -118,4 +118,22 @@ class AudioTest {
         assertEquals(AudioMode.NORMAL, AudioMode.of(1000, 1000));
         assertEquals(AudioMode.NORMAL, AudioMode.of(0, 5));
     }
+
+    @Test
+    void mixerBounds() {
+        CrowdMixer m = new CrowdMixer(4);
+        assertThrows(IllegalArgumentException.class, () -> m.add(new short[3], 1));
+        assertThrows(IllegalArgumentException.class, () -> m.add(new short[4], 0));
+        m.add(new short[4], Integer.MAX_VALUE);
+        m.add(new short[4], 5);
+        assertEquals(Integer.MAX_VALUE, m.mix().participants());
+    }
+
+    @Test
+    void signedMixIsDomainSeparated() {
+        Identity id = Identity.generate();
+        SignedMix sm = SignedMix.sign(id, 1, 2, 3, new byte[] {9});
+        byte[] raw = Arrays.copyOf(sm.encode(), sm.encode().length - 64);
+        assertFalse(id.id().verify(raw, sm.signature()));
+    }
 }

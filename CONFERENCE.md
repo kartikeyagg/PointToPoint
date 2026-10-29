@@ -145,6 +145,11 @@ except the tampered one (which is counted).
   concealment. A direct libopus binding would sound better on lossy links.
 - Camera capture is implemented for all three OSes but has only been unit-tested without a real
   camera so far.
+- Media sessions are numbered by the sender's clock. If that clock jumps backwards across a
+  restart, receivers drop the restarted stream until they reconnect to that sender (keys and
+  nonces still never repeat).
+- A revocation or kick freezes the target's admin commands to the ones the revoker had seen; a
+  legitimate command still in flight at that moment is dropped (safety over liveness).
 - Epoch keys are wrapped per member (6.4 MB per rotation at 100k); an MLS tree (RFC 9420) would
   cut that, and is the planned upgrade.
 - The conference node will listen on UDP **7302** by default (phase 3).

@@ -16,6 +16,8 @@ public record SignedMix(ParticipantId mixer, long frameSeq, int participants, in
                         byte[] payload, byte[] signature) {
 
     public static final int MAX_PAYLOAD = 1500;
+    /** Domain separation: the same identity key signs other message kinds. */
+    private static final byte[] DOMAIN = "p2p-conf/v1 signed-mix".getBytes(java.nio.charset.StandardCharsets.UTF_8);
     private static final int HEADER = ParticipantId.ENCODED_LEN + 8 + 4 + 4 + 2;
 
     public SignedMix {
@@ -28,11 +30,11 @@ public record SignedMix(ParticipantId mixer, long frameSeq, int participants, in
 
     public static SignedMix sign(Identity id, long frameSeq, int participants, int inputs, byte[] payload) {
         byte[] body = body(id.id(), frameSeq, participants, inputs, payload);
-        return new SignedMix(id.id(), frameSeq, participants, inputs, payload, id.sign(body));
+        return new SignedMix(id.id(), frameSeq, participants, inputs, payload, id.sign(signedBytes(body)));
     }
 
     public boolean verify() {
-        return mixer.verify(body(mixer, frameSeq, participants, inputs, payload), signature);
+        return mixer.verify(signedBytes(body(mixer, frameSeq, participants, inputs, payload)), signature);
     }
 
     public byte[] encode() {
@@ -59,6 +61,10 @@ public record SignedMix(ParticipantId mixer, long frameSeq, int participants, in
         byte[] sig = new byte[Crypto.SIGNATURE_LEN];
         b.get(sig);
         return new SignedMix(mixer, seq, participants, inputs, payload, sig);
+    }
+
+    private static byte[] signedBytes(byte[] body) {
+        return ByteBuffer.allocate(DOMAIN.length + body.length).put(DOMAIN).put(body).array();
     }
 
     private static byte[] body(ParticipantId mixer, long seq, int participants, int inputs, byte[] payload) {

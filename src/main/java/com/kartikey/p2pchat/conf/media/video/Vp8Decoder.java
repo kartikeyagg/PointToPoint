@@ -2,6 +2,7 @@ package com.kartikey.p2pchat.conf.media.video;
 
 import com.kartikey.p2pchat.conf.media.Codecs;
 import com.kartikey.p2pchat.conf.media.EncodedFrame;
+import com.kartikey.p2pchat.conf.media.MediaFormat;
 import com.kartikey.p2pchat.conf.media.VideoFrame;
 import org.bytedeco.ffmpeg.avcodec.AVCodec;
 import org.bytedeco.ffmpeg.avcodec.AVCodecContext;
@@ -52,7 +53,11 @@ public final class Vp8Decoder implements Codecs.VideoDecoder {
 
     @Override
     public VideoFrame decode(EncodedFrame in) {
-        if (closed || in == null || in.data().length == 0) {
+        if (closed || in == null || in.data().length == 0 || in.data().length > MediaFormat.MAX_ENCODED_FRAME
+                || tooBig(in.width(), in.height())) {
+            return null;
+        }
+        if (!headerOk(in.data())) {
             return null;
         }
         if (!haveKey) {
@@ -75,6 +80,11 @@ public final class Vp8Decoder implements Codecs.VideoDecoder {
             return null;
         }
         try {
+            // a tiny hostile keyframe can declare 16383x16383; never allocate from untrusted dims unchecked
+            if (tooBig(frame.width(), frame.height()) || frame.width() < 2 || frame.height() < 2) {
+                haveKey = false;
+                return null;
+            }
             int w = frame.width() & ~1, h = frame.height() & ~1;
             byte[] out = new byte[VideoFrame.size(w, h)];
             copyPlane(0, out, 0, w, h);
@@ -84,6 +94,29 @@ public final class Vp8Decoder implements Codecs.VideoDecoder {
         } finally {
             avutil.av_frame_unref(frame);
         }
+    }
+
+    /**
+     * Checks the VP8 frame tag (RFC 6386 9.1) so libvpx never sees a hostile size: a keyframe has
+     * bit0 of byte0 clear, then start code 9d 01 2a and 14-bit little-endian width and height.
+     */
+    static boolean headerOk(byte[] d) {
+        if (d.length < 3) {
+            return false;
+        }
+        if ((d[0] & 1) != 0) {
+            return true; // delta frame: no dimensions
+        }
+        if (d.length < 10 || (d[3] & 0xff) != 0x9d || d[4] != 0x01 || d[5] != 0x2a) {
+            return false;
+        }
+        int w = ((d[6] & 0xff) | (d[7] & 0xff) << 8) & 0x3fff;
+        int h = ((d[8] & 0xff) | (d[9] & 0xff) << 8) & 0x3fff;
+        return w > 0 && h > 0 && !tooBig(w, h);
+    }
+
+    private static boolean tooBig(int w, int h) {
+        return w > MediaFormat.MAX_VIDEO_WIDTH || h > MediaFormat.MAX_VIDEO_HEIGHT;
     }
 
     private void copyPlane(int plane, byte[] dst, int off, int w, int h) {

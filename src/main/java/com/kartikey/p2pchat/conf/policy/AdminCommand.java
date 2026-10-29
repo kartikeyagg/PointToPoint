@@ -5,14 +5,23 @@ import com.kartikey.p2pchat.conf.Identity;
 import com.kartikey.p2pchat.conf.ParticipantId;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * A signed moderation action. Authority is not checked here (the issuer may no longer be an admin
  * by the time it is replayed); {@link PolicyState} decides that. The lamport clock gives a total
  * order that every node derives identically from the same set of commands.
+ *
+ * <p>{@code frozen} (REVOKE_ADMIN and KICK only) lists the ids of the target's commands the issuer
+ * had accepted. Lamport values are chosen by the issuer, so without it a revoked admin could sign
+ * a command with a lamport below the revocation and have it replayed as if issued earlier.
  */
 public record AdminCommand(byte[] meetingId, ParticipantId issuer, long lamport, long issuedAtMillis,
-                           Kind kind, ParticipantId target, long untilMillis, byte[] signature) {
+                           Kind kind, ParticipantId target, long untilMillis, List<byte[]> frozen, byte[] signature) {
+
+    public static final int MAX_FROZEN = 1024;
+    private static final int ID_LEN = 32;
 
     public enum Kind {
         GRANT_ADMIN(true), REVOKE_ADMIN(true), TRANSFER_HOST(true), ALLOW_SPEAK(true), DENY_SPEAK(true),
@@ -27,7 +36,7 @@ public record AdminCommand(byte[] meetingId, ParticipantId issuer, long lamport,
     }
 
     private static final byte[] DOMAIN = "p2p-conf-admincmd-v1".getBytes(StandardCharsets.UTF_8);
-    private static final int BODY_FIXED = MeetingGenesis.ID_LEN + ParticipantId.ENCODED_LEN + 8 + 8 + 1 + 1 + 8;
+    private static final int BODY_FIXED = MeetingGenesis.ID_LEN + ParticipantId.ENCODED_LEN + 8 + 8 + 1 + 1 + 8 + 2;
 
     public AdminCommand {
         if (meetingId.length != MeetingGenesis.ID_LEN || signature.length != Crypto.SIGNATURE_LEN) {
@@ -36,26 +45,50 @@ public record AdminCommand(byte[] meetingId, ParticipantId issuer, long lamport,
         if (kind.targeted != (target != null)) {
             throw new IllegalArgumentException(kind + (kind.targeted ? " needs a target" : " takes no target"));
         }
+        if (frozen == null) {
+            frozen = List.of();
+        }
+        if (frozen.size() > MAX_FROZEN || (!frozen.isEmpty() && kind != Kind.KICK && kind != Kind.REVOKE_ADMIN)) {
+            throw new IllegalArgumentException("bad frozen set");
+        }
+        List<byte[]> copy = new ArrayList<>(frozen.size());
+        for (byte[] id : frozen) {
+            if (id.length != ID_LEN) {
+                throw new IllegalArgumentException("bad frozen id");
+            }
+            copy.add(id.clone());
+        }
+        frozen = List.copyOf(copy);
         meetingId = meetingId.clone();
         signature = signature.clone();
     }
 
     public static AdminCommand sign(Identity issuer, byte[] meetingId, Kind kind, ParticipantId target,
                                     long untilMillis, long lamport, long now) {
-        byte[] body = body(meetingId, issuer.id(), lamport, now, kind, target, untilMillis);
-        return new AdminCommand(meetingId, issuer.id(), lamport, now, kind, target, untilMillis, issuer.sign(signed(body)));
+        return sign(issuer, meetingId, kind, target, untilMillis, lamport, now, List.of());
+    }
+
+    /** As above, with the frozen set for a REVOKE_ADMIN or KICK; see {@link PolicyState#frozenFor}. */
+    public static AdminCommand sign(Identity issuer, byte[] meetingId, Kind kind, ParticipantId target,
+                                    long untilMillis, long lamport, long now, List<byte[]> frozen) {
+        AdminCommand unsigned = new AdminCommand(meetingId, issuer.id(), lamport, now, kind, target, untilMillis,
+                frozen, new byte[Crypto.SIGNATURE_LEN]);
+        return new AdminCommand(meetingId, issuer.id(), lamport, now, kind, target, untilMillis, frozen,
+                issuer.sign(signed(unsigned.body())));
     }
 
     private static byte[] body(byte[] meetingId, ParticipantId issuer, long lamport, long issued, Kind kind,
-                               ParticipantId target, long until) {
-        ByteBuffer b = ByteBuffer.allocate(BODY_FIXED + (target == null ? 0 : ParticipantId.ENCODED_LEN));
+                               ParticipantId target, long until, List<byte[]> frozen) {
+        ByteBuffer b = ByteBuffer.allocate(BODY_FIXED + (target == null ? 0 : ParticipantId.ENCODED_LEN)
+                + frozen.size() * ID_LEN);
         b.put(meetingId).put(issuer.encoded()).putLong(lamport).putLong(issued).put((byte) kind.ordinal());
         if (target == null) {
             b.put((byte) 0);
         } else {
             b.put((byte) 1).put(target.encoded());
         }
-        b.putLong(until);
+        b.putLong(until).putShort((short) frozen.size());
+        frozen.forEach(b::put);
         return b.array();
     }
 
@@ -64,7 +97,7 @@ public record AdminCommand(byte[] meetingId, ParticipantId issuer, long lamport,
     }
 
     private byte[] body() {
-        return body(meetingId, issuer, lamport, issuedAtMillis, kind, target, untilMillis);
+        return body(meetingId, issuer, lamport, issuedAtMillis, kind, target, untilMillis, frozen);
     }
 
     public boolean verify() {
@@ -81,6 +114,7 @@ public record AdminCommand(byte[] meetingId, ParticipantId issuer, long lamport,
         if (data.length < min) {
             throw new IllegalArgumentException("truncated admin command");
         }
+        int fixedTail = 0;
         ByteBuffer b = ByteBuffer.wrap(data);
         byte[] meeting = new byte[MeetingGenesis.ID_LEN];
         b.get(meeting);
@@ -94,18 +128,29 @@ public record AdminCommand(byte[] meetingId, ParticipantId issuer, long lamport,
         int flag = b.get();
         ParticipantId target = null;
         if (flag == 1) {
-            if (data.length != min + ParticipantId.ENCODED_LEN) {
-                throw new IllegalArgumentException("bad admin command length");
+            if (data.length < min + ParticipantId.ENCODED_LEN) {
+                throw new IllegalArgumentException("truncated admin command");
             }
+            fixedTail = ParticipantId.ENCODED_LEN;
             target = ParticipantId.decode(data, b.position());
             b.position(b.position() + ParticipantId.ENCODED_LEN);
-        } else if (flag != 0 || data.length != min) {
-            throw new IllegalArgumentException("bad admin command length");
+        } else if (flag != 0) {
+            throw new IllegalArgumentException("bad admin command flag");
         }
         long until = b.getLong();
+        int n = b.getShort() & 0xffff;
+        if (n > MAX_FROZEN || data.length != min + fixedTail + n * ID_LEN) {
+            throw new IllegalArgumentException("bad admin command length");
+        }
+        List<byte[]> frozen = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            byte[] id = new byte[ID_LEN];
+            b.get(id);
+            frozen.add(id);
+        }
         byte[] sig = new byte[Crypto.SIGNATURE_LEN];
         b.get(sig);
-        return new AdminCommand(meeting, issuer, lamport, issued, Kind.values()[k], target, until, sig);
+        return new AdminCommand(meeting, issuer, lamport, issued, Kind.values()[k], target, until, frozen, sig);
     }
 
     /** SHA-256 of the encoding; identifies the command for dedup, ordering and gossip digests. */

@@ -5,7 +5,18 @@ import com.kartikey.p2pchat.conf.ParticipantId;
 
 /** Derives the 64-bit stream id carried in every packet header. */
 public final class StreamIds {
+    private static final java.util.concurrent.atomic.AtomicLong LAST_SESSION = new java.util.concurrent.atomic.AtomicLong();
+
     private StreamIds() {}
+
+    /**
+     * A new sender session id: wall-clock millis, bumped so two calls in one process never return
+     * the same value. Across processes it relies on the clock moving forward.
+     */
+    public static long newSession() {
+        long now = System.currentTimeMillis();
+        return LAST_SESSION.updateAndGet(prev -> Math.max(prev + 1, now));
+    }
 
     /**
      * 56 bits of sha256(sender identity) followed by an 8-bit track number. Deriving it from the

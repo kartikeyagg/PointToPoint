@@ -25,6 +25,8 @@ public record Fragment(int frameId, int index, int count, boolean keyframe, int 
     public static final int HEADER_LENGTH = 21;
     /** Codec bytes per fragment, so header + data stays within {@link MediaFormat#MAX_FRAGMENT}. */
     public static final int MAX_DATA = MediaFormat.MAX_FRAGMENT - HEADER_LENGTH;
+    /** Most fragments a legitimate frame can need; bounds what a hostile count can make us allocate. */
+    public static final int MAX_COUNT = (MediaFormat.MAX_ENCODED_FRAME + MAX_DATA - 1) / MAX_DATA;
 
     public byte[] encode() {
         return ByteBuffer.allocate(HEADER_LENGTH + data.length)
@@ -45,7 +47,10 @@ public record Fragment(int frameId, int index, int count, boolean keyframe, int 
         int width = b.getShort() & 0xFFFF;
         int height = b.getShort() & 0xFFFF;
         long ts = b.getLong();
-        if (count < 1 || index >= count) throw new IllegalArgumentException("bad fragment index");
+        if (count < 1 || count > MAX_COUNT || index >= count) throw new IllegalArgumentException("bad fragment index");
+        if (width < 2 || height < 2 || width > MediaFormat.MAX_VIDEO_WIDTH || height > MediaFormat.MAX_VIDEO_HEIGHT
+                || (width & 1) != 0 || (height & 1) != 0)
+            throw new IllegalArgumentException("bad picture size");
         if ((flags & ~1) != 0) throw new IllegalArgumentException("unknown fragment flags");
         byte[] data = new byte[b.remaining()];
         b.get(data);

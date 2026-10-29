@@ -3,7 +3,7 @@ package com.kartikey.p2pchat.conf.stream;
 import java.nio.ByteBuffer;
 
 /**
- * Fixed 24-byte clear header that relays may read to route (layer, stripe, loudness). It is the
+ * Fixed 32-byte clear header that relays may read to route (layer, stripe, loudness). It is the
  * AEAD associated data, so any change by a relay is detected on open, and its bytes are covered by
  * the packet hash in the signed manifest.
  *
@@ -15,13 +15,16 @@ import java.nio.ByteBuffer;
  * 14..21  seq, per-stream monotonic (8)
  * 22      stripe (1)
  * 23      audioLevel (1; 0 = loudest .. 127 = silence, RFC 6464 style)
+ * 24..31  session (8): sender start time in millis, strictly increasing per process
  * </pre>
- * Version and kind share a byte, and layer and flags share another, to fit the 24-byte budget.
+ * Version and kind share a byte, and layer and flags share another, to keep the header small. The
+ * session makes a restarted sender (seq back at 0, same streamId) a different key and nonce space,
+ * and lets receivers tell live traffic from replays of an older run.
  */
 public record MediaHeader(Kind kind, long streamId, int epoch, long seq, int layer, int stripe,
-                          int audioLevel, int flags) {
+                          int audioLevel, int flags, long session) {
 
-    public static final int LENGTH = 24;
+    public static final int LENGTH = 32;
     public static final int VERSION = 1;
     public static final int FLAG_KEYFRAME = 1;
 
@@ -35,6 +38,12 @@ public record MediaHeader(Kind kind, long streamId, int epoch, long seq, int lay
         if (flags < 0 || flags > 63) throw new IllegalArgumentException("flags out of range");
     }
 
+    /** Session 0 form, for callers that do not restart streams. */
+    public MediaHeader(Kind kind, long streamId, int epoch, long seq, int layer, int stripe,
+                       int audioLevel, int flags) {
+        this(kind, streamId, epoch, seq, layer, stripe, audioLevel, flags, 0);
+    }
+
     public boolean keyframe() {
         return (flags & FLAG_KEYFRAME) != 0;
     }
@@ -44,7 +53,7 @@ public record MediaHeader(Kind kind, long streamId, int epoch, long seq, int lay
         b.put((byte) ((VERSION << 4) | kind.ordinal()));
         b.put((byte) ((layer << 6) | flags));
         b.putLong(streamId).putInt(epoch).putLong(seq);
-        b.put((byte) stripe).put((byte) audioLevel);
+        b.put((byte) stripe).put((byte) audioLevel).putLong(session);
         return b.array();
     }
 
@@ -62,6 +71,7 @@ public record MediaHeader(Kind kind, long streamId, int epoch, long seq, int lay
         long seq = b.getLong();
         int stripe = b.get() & 0xFF;
         int level = b.get() & 0xFF;
-        return new MediaHeader(kinds[vk & 0x0F], streamId, epoch, seq, lf >>> 6, stripe, level, lf & 0x3F);
+        long session = b.getLong();
+        return new MediaHeader(kinds[vk & 0x0F], streamId, epoch, seq, lf >>> 6, stripe, level, lf & 0x3F, session);
     }
 }

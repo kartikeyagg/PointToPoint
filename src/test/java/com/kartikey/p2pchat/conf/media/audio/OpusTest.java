@@ -96,6 +96,14 @@ class OpusTest {
     }
 
     @Test
+    void corruptPacketIsConcealed() {
+        try (OpusDecoder dec = new OpusDecoder()) {
+            assertEquals(N, dec.decode(new byte[] {(byte) 0xFF, 1, 2, 3, 4}).length);
+            assertEquals(N, dec.decode(new byte[0]).length);
+        }
+    }
+
+    @Test
     void fastEnough() {
         try (OpusEncoder enc = new OpusEncoder(); OpusDecoder dec = new OpusDecoder()) {
             short[] pcm = sine(0);
