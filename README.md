@@ -1,4 +1,3 @@
-| `conf/*` | conference mode core (policy, keys, signed streams, relay overlay, audio), see [CONFERENCE.md](CONFERENCE.md) |
 # PointToPoint — serverless P2P chat in Java
 
 Two devices that know each other's address chat directly over the internet.
@@ -13,8 +12,9 @@ Chat packets go **straight from one device to the other**. There is no chat serv
 - Small Swing GUI, plus a terminal mode
 - **Remote desktop** (like AnyDesk, without a server): share your screen, or see and control the
   other computer. See **[REMOTE_DESKTOP.md](REMOTE_DESKTOP.md)**
-- **Conference mode** (in progress): serverless meetings for up to ~100k people where participants
-  relay for each other and cannot tamper with what they forward. See **[CONFERENCE.md](CONFERENCE.md)**
+- **Conference mode**: serverless meetings (designed for up to ~100k people) where participants
+  relay for each other and cannot tamper with what they forward. `./conference.sh` to start.
+  See **[CONFERENCE.md](CONFERENCE.md)** and what's left in **[REMAINING.md](REMAINING.md)**
 
 ## Quick start
 
@@ -22,6 +22,7 @@ Chat packets go **straight from one device to the other**. There is no chat serv
 ./run.sh                 # builds on first run, opens the GUI
 ./run.sh --whoami        # terminal only: print this device's public address(es)
 ./desktop.sh             # remote desktop launcher (see REMOTE_DESKTOP.md)
+./conference.sh          # conference launcher (see CONFERENCE.md)
 ```
 
 On **both** devices:
@@ -144,6 +145,7 @@ JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 mvn test   # codec, crypto, STUN pa
 | `SecureChannel` | X25519 handshake, per-direction session keys, counters, replay window, rekeying |
 | `GcmCipher` / `KeystreamPool` | AES-GCM with precomputed keystreams for small frames |
 | `remote/*` | remote desktop, see [REMOTE_DESKTOP.md](REMOTE_DESKTOP.md) |
+| `conf/*` | conference mode (policy, keys, signed streams, relay trees, media, network, node, UI), see [CONFERENCE.md](CONFERENCE.md) |
 | `ChatWindow` | Swing GUI |
 | `ConsoleChat` | terminal client and `--whoami` |
 | `Options` / `Main` | argument parsing and entry point |
