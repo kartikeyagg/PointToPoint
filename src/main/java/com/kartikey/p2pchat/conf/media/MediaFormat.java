@@ -21,6 +21,14 @@ public final class MediaFormat {
     /** Keyframe at least this often, so a receiver that joins or loses packets recovers quickly. */
     public static final int KEYFRAME_INTERVAL_FRAMES = VIDEO_FPS * 2;
 
+    /**
+     * Largest picture anyone may send (screen share of a 4K display). Receivers reject bigger frames
+     * before allocating, so a member can't make everyone allocate gigabytes.
+     */
+    public static final int MAX_VIDEO_WIDTH = 3840, MAX_VIDEO_HEIGHT = 2160;
+    /** Largest encoded video frame accepted (a 4K keyframe fits comfortably). */
+    public static final int MAX_ENCODED_FRAME = 2 * 1024 * 1024;
+
     /** Encoded media payload per packet, leaving room for headers, tags and the fragment header. */
     public static final int MAX_FRAGMENT = 1000;
 
