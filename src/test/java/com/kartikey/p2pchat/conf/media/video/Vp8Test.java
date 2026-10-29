@@ -127,6 +127,19 @@ class Vp8Test {
     }
 
     @Test
+    void hostileKeyframeHeaderRejected() {
+        byte[] hdr = {0x10, 0, 0, (byte) 0x9d, 0x01, 0x2a, (byte) 0xff, 0x3f, (byte) 0xff, 0x3f};
+        try (Vp8Decoder dec = new Vp8Decoder()) {
+            assertNull(dec.decode(new EncodedFrame(hdr, true, 0, 320, 180)));
+            hdr[3] = 0;
+            assertNull(dec.decode(new EncodedFrame(hdr, true, 0, 320, 180)));
+        }
+        assertFalse(Vp8Decoder.headerOk(hdr));
+        assertFalse(Vp8Decoder.headerOk(new byte[] {0x10, 0, 0, (byte) 0x9d, 1, 0x2a, 0, 0, 0, 0}));
+        assertTrue(Vp8Decoder.headerOk(new byte[] {0x10, 0, 0, (byte) 0x9d, 1, 0x2a, 0x40, 1, (byte) 0xb4, 0}));
+    }
+
+    @Test
     void interruptDuringEncodeThenCloseIsSafe() {
         VideoFrame src = synth(1280, 720, 1);
         for (int i = 0; i < 5; i++) {

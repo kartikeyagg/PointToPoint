@@ -57,6 +57,9 @@ public final class Vp8Decoder implements Codecs.VideoDecoder {
                 || tooBig(in.width(), in.height())) {
             return null;
         }
+        if (!headerOk(in.data())) {
+            return null;
+        }
         if (!haveKey) {
             if (!in.keyframe()) {
                 return null;
@@ -91,6 +94,25 @@ public final class Vp8Decoder implements Codecs.VideoDecoder {
         } finally {
             avutil.av_frame_unref(frame);
         }
+    }
+
+    /**
+     * Checks the VP8 frame tag (RFC 6386 9.1) so libvpx never sees a hostile size: a keyframe has
+     * bit0 of byte0 clear, then start code 9d 01 2a and 14-bit little-endian width and height.
+     */
+    static boolean headerOk(byte[] d) {
+        if (d.length < 3) {
+            return false;
+        }
+        if ((d[0] & 1) != 0) {
+            return true; // delta frame: no dimensions
+        }
+        if (d.length < 10 || (d[3] & 0xff) != 0x9d || d[4] != 0x01 || d[5] != 0x2a) {
+            return false;
+        }
+        int w = ((d[6] & 0xff) | (d[7] & 0xff) << 8) & 0x3fff;
+        int h = ((d[8] & 0xff) | (d[9] & 0xff) << 8) & 0x3fff;
+        return w > 0 && h > 0 && !tooBig(w, h);
     }
 
     private static boolean tooBig(int w, int h) {
