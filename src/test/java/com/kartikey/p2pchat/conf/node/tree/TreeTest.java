@@ -74,27 +74,40 @@ class TreeTest {
         assertEquals(0, sim.fwd[5].unknownStreamDrops());
     }
 
-    @Test
-    void twoPercentLossStillDelivers95Percent() {
-        TreeSim sim = settled(400, 12);
-        sim.fabric.setMediaLoss(0.02);
+    private void lossRun(double loss, long seed, double minWorst) {
+        TreeSim sim = settled(400, seed);
+        sim.fabric.setMediaLoss(loss);
         sim.sending = true;
         sim.run(10_000);
         sim.sending = false;
-        sim.run(500);
+        sim.run(800);
         double sum = 0, worst = 1;
+        int cnt = 0;
         for (int i : sim.subscribers()) {
-            double f = sim.fraction(i, sim.firstSeq, sim.lastSeq, -1);
-            sum += f;
-            worst = Math.min(worst, f);
+            for (int st = 0; st < K; st++) {
+                // a stream's very first packet per stripe has no predecessor to reveal the gap, so start after it
+                double f = sim.fraction(i, sim.firstSeq + K, sim.lastSeq - 8, st);
+                sum += f;
+                cnt++;
+                worst = Math.min(worst, f);
+            }
         }
-        double mean = sum / sim.subscribers().size();
-        System.out.printf("[tree] 400 nodes, 2%% loss: mean delivery %.4f, worst node %.4f%n", mean, worst);
-        // No retransmission/FEC at this layer: a depth-2 receiver loses ~3.96% on average, so the mean must
-        // clear 95% and the unluckiest of 400 nodes (about -3 sigma) must stay above 90%.
-        assertTrue(mean >= 0.95, "mean " + mean);
-        assertTrue(worst >= 0.90, "worst " + worst);
+        long nack = 0, retx = 0, media = 0, nacks = 0, retxN = 0;
+        for (int i = 0; i < sim.n; i++) {
+            Forwarder.NackStats ns = sim.fwd[i].nackStats();
+            nack += ns.nackBytes(); retx += ns.retransBytes(); media += ns.mediaBytes(); nacks += ns.nacksSent(); retxN += ns.retransmits();
+        }
+        System.out.printf("[tree] 400 nodes, %.0f%% loss: mean %.4f, worst node-stripe %.4f; NACKs %d (%.2f%% of media bytes), "
+                + "retransmits %d (%.2f%%), total overhead %.2f%%%n", loss * 100, sum / cnt, worst, nacks,
+                100.0 * nack / media, retxN, 100.0 * retx / media, 100.0 * (nack + retx) / media);
+        assertTrue(worst >= minWorst, "worst " + worst);
     }
+
+    @Test
+    void twoPercentLossWorstNodeAtLeast99Percent() { lossRun(0.02, 12, 0.99); }
+
+    @Test
+    void fivePercentLossWorstNodeAtLeast97Percent() { lossRun(0.05, 18, 0.97); }
 
     @Test
     void packetsFromNonParentsAreNeverAcceptedOrForwarded() {

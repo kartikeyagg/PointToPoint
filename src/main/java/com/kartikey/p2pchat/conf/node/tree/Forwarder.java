@@ -6,6 +6,7 @@ import com.kartikey.p2pchat.conf.stream.MediaHeader;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -47,6 +48,15 @@ public final class Forwarder implements PeerNetwork.Listener {
     /** A stream counts as active while any stripe delivered something within this window. */
     private static final long ACTIVE_WINDOW_MILLIS = 5000;
 
+    private static final int SEEN_WINDOW = 1024, RING_MILLIS = 1000, STREAM_RING_BYTES = 2 << 20;
+    private static final int NACK_MAX_SEQS = 32, MAX_MISSING = 64, RETX_BURST = 64;
+    private static final long NACK_GRACE = 30, NACK_MAX_AGE = 400, RETX_PER_SECOND = 64;
+    public static final int NACK_MAGIC = 0xC1;
+    /** One NACK plus two retries, all within NACK_MAX_AGE (a retry is spaced about one RTT). */
+    private static final int MAX_TRIES = 3;
+
+    private record Buf(byte[] packet, long at) {}
+
     private static final class Stripe {
         ParticipantId parent, grandparent;
         long[] path; // ancestors source..parent; null until known
@@ -54,7 +64,12 @@ public final class Forwarder implements PeerNetwork.Listener {
         long lastRx;
         final Map<ParticipantId, Integer> children = new LinkedHashMap<>();
         int sentLayer = -1;
-        long hiSeq = -1, window; // bit i of window = seq (hiSeq - i) seen
+        long hiSeq = -1;
+        final java.util.BitSet seenBits = new java.util.BitSet(SEEN_WINDOW); // seq mod SEEN_WINDOW, within SEEN_WINDOW of hiSeq
+        final LinkedHashMap<Long, Buf> ring = new LinkedHashMap<>(); // recent packets, for retransmission
+        final LinkedHashMap<Long, long[]> missing = new LinkedHashMap<>(); // seq -> {detectedAt, nextNackAt, tries}
+        final Map<ParticipantId, Double> childTokens = new HashMap<>();
+        final Map<ParticipantId, Long> childTokenAt = new HashMap<>();
         // repair
         boolean repairing;
         ParticipantId lost, attempting;
@@ -72,9 +87,11 @@ public final class Forwarder implements PeerNetwork.Listener {
         Sink sink;
         ParticipantId sourceId;
         byte[] subscribeMsg;
+        ParticipantId coordinator; // null = the forwarder-wide default
         long lastSubscribeSent = -1;
         long lastRx, activeSince;
         long received, forwarded, dropped, delivered;
+        long ringBytes;
         final Map<Integer, Stripe> stripes = new HashMap<>();
         Stream(long id) { this.id = id; }
     }
@@ -90,6 +107,7 @@ public final class Forwarder implements PeerNetwork.Listener {
     private long unknownDropped, malformed, spoofDropped;
     private final Deque<Long> recoveries = new ArrayDeque<>();
     private int repairsStarted;
+    private long mediaBytesSent, nackBytesSent, retransBytesSent, nacksSent, retransSent, nacksIgnored;
 
     public Forwarder(PeerNetwork net, LongSupplier clock, Config cfg) {
         this.net = net;
@@ -105,17 +123,29 @@ public final class Forwarder implements PeerNetwork.Listener {
     public void setCrowdHandler(CrowdHandler h) { this.crowd = h; }
 
     /** We are the source of {@code streamId}: we inject packets with {@link #send}. */
-    public void publish(long streamId) {
+    public void publish(long streamId) { publish(streamId, null); }
+
+    /** As {@link #publish(long)}; {@code coordinator} runs this stream's tree (often ourselves). */
+    public void publish(long streamId, ParticipantId coordinator) {
         Stream s = stream(streamId, true);
         if (s == null) return;
         s.source = true;
-        if (coordinator != null) net.sendControl(coordinator, TreeMessages.publish(streamId, myCandidates));
+        s.coordinator = coordinator;
+        ParticipantId c = coordOf(s);
+        if (c != null && !c.equals(net.self())) net.sendControl(c, TreeMessages.publish(streamId, myCandidates));
     }
 
     /** Subscribe to a stream; {@code uploadKbps}/{@code canRelay} say how much we can forward for others. */
     public void subscribe(long streamId, ParticipantId source, int maxLayer, int uploadKbps, boolean canRelay, Sink sink) {
+        subscribe(streamId, source, null, maxLayer, uploadKbps, canRelay, sink);
+    }
+
+    /** Subscribe with a per-stream coordinator (null = the default from {@link #setCoordinator}). */
+    public void subscribe(long streamId, ParticipantId source, ParticipantId coordinator, int maxLayer, int uploadKbps,
+                          boolean canRelay, Sink sink) {
         Stream s = stream(streamId, true);
         if (s == null) return;
+        s.coordinator = coordinator;
         s.subscribed = true;
         s.ownMax = maxLayer;
         s.sink = sink;
@@ -141,14 +171,19 @@ public final class Forwarder implements PeerNetwork.Listener {
         Stream s = streams.remove(streamId);
         if (s == null) return;
         goodbye(s);
-        if (coordinator != null) net.sendControl(coordinator, TreeMessages.unsubscribe(streamId));
+        ParticipantId c = coordOf(s);
+        if (c != null) net.sendControl(c, TreeMessages.unsubscribe(streamId));
     }
 
     /** Leave everything gracefully: parents drop us, children repair immediately. */
     public void leave() {
-        for (Stream s : streams.values()) goodbye(s);
+        java.util.Set<ParticipantId> coords = new java.util.LinkedHashSet<>();
+        for (Stream s : streams.values()) {
+            goodbye(s);
+            if (coordOf(s) != null) coords.add(coordOf(s));
+        }
         streams.clear();
-        if (coordinator != null) net.sendControl(coordinator, TreeMessages.leave());
+        for (ParticipantId c : coords) net.sendControl(c, TreeMessages.leave());
     }
 
     private void goodbye(Stream s) {
@@ -166,7 +201,8 @@ public final class Forwarder implements PeerNetwork.Listener {
         Stream s = streams.get(h.streamId());
         if (s == null || !s.source) return false;
         Stripe st = s.stripes.get(h.stripe());
-        if (st == null) return true; // no children in that stripe yet
+        if (st == null) st = s.stripes.computeIfAbsent(h.stripe(), x -> new Stripe());
+        if (h.kind() != MediaHeader.Kind.MANIFEST) remember(s, st, h.seq(), packet, clock.getAsLong());
         forwardToChildren(s, st, h, packet);
         return true;
     }
@@ -206,6 +242,10 @@ public final class Forwarder implements PeerNetwork.Listener {
         Stream s = streams.get(streamId);
         return s == null ? new StreamStats(0, 0, 0, 0) : new StreamStats(s.received, s.forwarded, s.dropped, s.delivered);
     }
+
+    /** NACK traffic and retransmissions relative to normally forwarded media bytes. */
+    public record NackStats(long nacksSent, long nackBytes, long retransmits, long retransBytes, long mediaBytes, long ignored) {}
+    public NackStats nackStats() { return new NackStats(nacksSent, nackBytesSent, retransSent, retransBytesSent, mediaBytesSent, nacksIgnored); }
 
     public long unknownStreamDrops() { return unknownDropped; }
     public long malformedCount() { return malformed; }
@@ -261,6 +301,10 @@ public final class Forwarder implements PeerNetwork.Listener {
             if (crowd != null) crowd.onCrowdUp(from, packet);
             return;
         }
+        if (packet.length > 11 && (packet[0] & 0xff) == NACK_MAGIC) {
+            onNack(from, packet);
+            return;
+        }
         MediaHeader h;
         try { h = MediaHeader.decode(packet); } catch (RuntimeException e) { malformed++; return; }
         Stream s = streams.get(h.streamId());
@@ -271,8 +315,11 @@ public final class Forwarder implements PeerNetwork.Listener {
             spoofDropped++;
             return;
         }
-        if (h.kind() != MediaHeader.Kind.MANIFEST && duplicate(st, h.seq())) { s.dropped++; return; }
+        boolean media = h.kind() != MediaHeader.Kind.MANIFEST;
+        long prevHi = st.hiSeq;
+        if (media && duplicate(st, h.seq())) { s.dropped++; return; }
         long now = clock.getAsLong();
+        if (media) track(s, st, prevHi, h.seq(), packet, now);
         st.lastRx = now;
         if (s.lastRx == 0 || now - s.lastRx >= ACTIVE_WINDOW_MILLIS) s.activeSince = now; // stream (re)started
         s.lastRx = now;
@@ -333,6 +380,7 @@ public final class Forwarder implements PeerNetwork.Listener {
                     else if (st.attempting != null && now >= st.deadline) { st.qi++; advance(s, k, st, now); }
                 } else if (st.parent != null) {
                     if (active && now - Math.max(st.lastRx, s.activeSince) > cfg.silenceMillis()) startRepair(s, k, st, now, false);
+                    if (!st.missing.isEmpty()) sendNacks(s, k, st, now);
                     int eff = effectiveLayer(s, st);
                     if (st.sentLayer != eff && net.sendControl(st.parent, TreeMessages.layer(s.id, k, eff))) st.sentLayer = eff;
                 }
@@ -342,12 +390,16 @@ public final class Forwarder implements PeerNetwork.Listener {
 
     // ---- control handlers ------------------------------------------------------------------------
 
-    private boolean fromCoordinator(ParticipantId from) { return coordinator != null && coordinator.equals(from); }
+    private ParticipantId coordOf(Stream s) { return s.coordinator != null ? s.coordinator : coordinator; }
+
+    private boolean fromCoordinator(ParticipantId from, Stream s) {
+        ParticipantId c = s != null ? coordOf(s) : coordinator;
+        return c != null && c.equals(from);
+    }
 
     private void onPlace(ParticipantId from, TreeMessages.Place m) {
-        if (!fromCoordinator(from) || m.stripe() >= cfg.maxStripes()) return;
         Stream s = streams.get(m.streamId());
-        if (s == null || !s.subscribed) return;
+        if (s == null || !s.subscribed || !fromCoordinator(from, s) || m.stripe() >= cfg.maxStripes()) return;
         if (m.parent().equals(net.self())) return;
         net.connect(m.parent(), List.of(), null);
         Stripe st = s.stripes.computeIfAbsent(m.stripe(), x -> new Stripe());
@@ -356,8 +408,10 @@ public final class Forwarder implements PeerNetwork.Listener {
     }
 
     private void onAdopt(ParticipantId from, TreeMessages.Adopt m) {
-        if (!fromCoordinator(from) || m.stripe() >= cfg.maxStripes() || m.child().equals(net.self())) return;
-        Stream s = stream(m.streamId(), false);
+        if (m.stripe() >= cfg.maxStripes() || m.child().equals(net.self())) return;
+        Stream s = streams.get(m.streamId());
+        if (!fromCoordinator(from, s)) return;
+        if (s == null) s = stream(m.streamId(), false);
         if (s == null) return;
         Stripe st = s.stripes.computeIfAbsent(m.stripe(), x -> new Stripe());
         if (!st.children.containsKey(m.child()) && st.children.size() >= cfg.maxChildren()) return;
@@ -467,7 +521,8 @@ public final class Forwarder implements PeerNetwork.Listener {
         if (lost != null && !disconnected) net.sendControl(lost, TreeMessages.detach(s.id, k));
         List<ParticipantId> q = new ArrayList<>();
         for (ParticipantId b : st.backups) if (!b.equals(lost) && !q.contains(b)) q.add(b);
-        if (coordinator != null && !coordinator.equals(net.self())) q.add(coordinator);
+        ParticipantId coord = coordOf(s);
+        if (coord != null && !coord.equals(net.self())) q.add(coord);
         ParticipantId gp = st.grandparent;
         if (gp != null && !gp.equals(lost) && !q.contains(gp)) q.add(gp);
         st.queue = q;
@@ -491,7 +546,7 @@ public final class Forwarder implements PeerNetwork.Listener {
         ParticipantId c = st.attempting;
         if (c == null) return;
         boolean ok;
-        if (c.equals(coordinator)) {
+        if (c.equals(coordOf(s))) {
             ok = net.sendControl(c, TreeMessages.reparent(new TreeMessages.Reparent(s.id, k,
                     st.lost == null ? c : st.lost, st.wasDisconnect)));
         } else {
@@ -523,7 +578,8 @@ public final class Forwarder implements PeerNetwork.Listener {
 
     private void sendSubscribe(Stream s) {
         s.lastSubscribeSent = clock.getAsLong();
-        if (coordinator != null && s.subscribeMsg != null) net.sendControl(coordinator, s.subscribeMsg);
+        ParticipantId c = coordOf(s);
+        if (c != null && s.subscribeMsg != null) net.sendControl(c, s.subscribeMsg);
     }
 
     private Stream stream(long id, boolean create) {
@@ -542,25 +598,113 @@ public final class Forwarder implements PeerNetwork.Listener {
     }
 
     private boolean duplicate(Stripe st, long seq) {
-        if (st.hiSeq < 0 || seq > st.hiSeq) {
-            long shift = st.hiSeq < 0 ? 64 : seq - st.hiSeq;
-            st.window = shift >= 64 ? 1L : (st.window << shift) | 1L;
-            st.hiSeq = seq;
-            return false;
+        if (seq < 0) return true;
+        if (st.hiSeq >= 0 && seq <= st.hiSeq && st.hiSeq - seq >= SEEN_WINDOW) return true;
+        if (st.hiSeq < 0 || seq - st.hiSeq >= SEEN_WINDOW) {
+            st.seenBits.clear();
+        } else if (seq > st.hiSeq) {
+            for (long q = st.hiSeq + 1; q <= seq; q++) st.seenBits.clear((int) (q % SEEN_WINDOW));
         }
-        long d = st.hiSeq - seq;
-        if (d >= 64) return true;
-        long bit = 1L << d;
-        if ((st.window & bit) != 0) return true;
-        st.window |= bit;
+        int bit = (int) (seq % SEEN_WINDOW);
+        if (seq <= st.hiSeq && st.seenBits.get(bit)) return true;
+        st.seenBits.set(bit);
+        if (seq > st.hiSeq) st.hiSeq = seq;
         return false;
+    }
+
+    /** Called for a fresh (non-duplicate) media packet: record gaps, forget recovered seqs, buffer it. */
+    private void track(Stream s, Stripe st, long prevHi, long seq, byte[] packet, long now) {
+        st.missing.remove(seq);
+        if (prevHi >= 0 && seq > prevHi) {
+            long step = s.stripes.isEmpty() ? 1 : Collections.max(s.stripes.keySet()) + 1;
+            if (seq - prevHi <= step * (long) MAX_MISSING) {
+                for (long q = prevHi + step; q < seq; q += step) {
+                    if (st.missing.size() >= MAX_MISSING) break;
+                    st.missing.putIfAbsent(q, new long[] {now, now + NACK_GRACE, 0});
+                }
+            }
+        }
+        remember(s, st, seq, packet, now);
+    }
+
+    private void remember(Stream s, Stripe st, long seq, byte[] packet, long now) {
+        Buf old = st.ring.put(seq, new Buf(packet, now));
+        if (old != null) s.ringBytes -= old.packet().length;
+        s.ringBytes += packet.length;
+        var it = st.ring.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<Long, Buf> e = it.next();
+            if (now - e.getValue().at() > RING_MILLIS || s.ringBytes > STREAM_RING_BYTES) {
+                s.ringBytes -= e.getValue().packet().length;
+                it.remove();
+            } else break;
+        }
+    }
+
+    private void sendNacks(Stream s, int k, Stripe st, long now) {
+        List<Long> due = new ArrayList<>();
+        var it = st.missing.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<Long, long[]> e = it.next();
+            long[] m = e.getValue();
+            if (now - m[0] > NACK_MAX_AGE || m[2] >= MAX_TRIES) { it.remove(); continue; } // would miss the playout
+            if (now >= m[1] && due.size() < NACK_MAX_SEQS) {
+                due.add(e.getKey());
+                m[2]++;
+                m[1] = now + retryAfter(st.parent);
+            }
+        }
+        if (due.isEmpty()) return;
+        java.nio.ByteBuffer b = java.nio.ByteBuffer.allocate(11 + 8 * due.size());
+        b.put((byte) NACK_MAGIC).putLong(s.id).put((byte) k).put((byte) due.size());
+        for (long q : due) b.putLong(q);
+        if (net.sendMedia(st.parent, b.array())) { nacksSent++; nackBytesSent += b.capacity(); }
+    }
+
+    private long retryAfter(ParticipantId parent) {
+        PeerNetwork.LinkStats ls = net.stats(parent);
+        return Math.max(40, Math.min(150, ls == null ? 100 : ls.rttMillis() + 20));
+    }
+
+    private void onNack(ParticipantId from, byte[] p) {
+        try {
+            java.nio.ByteBuffer b = java.nio.ByteBuffer.wrap(p, 1, p.length - 1);
+            long sid = b.getLong();
+            int k = b.get() & 0xff;
+            int n = b.get() & 0xff;
+            Stream s = streams.get(sid);
+            Stripe st = s == null ? null : s.stripes.get(k);
+            Integer childLayer = st == null ? null : st.children.get(from);
+            if (childLayer == null || n > NACK_MAX_SEQS || b.remaining() < 8 * n) { nacksIgnored++; return; }
+            long now = clock.getAsLong();
+            // per-child token bucket: a hostile child cannot make us resend more than RETX_PER_SECOND
+            Long last = st.childTokenAt.get(from);
+            double tok = st.childTokens.getOrDefault(from, (double) RETX_BURST);
+            if (last != null) tok = Math.min(RETX_BURST, tok + (now - last) * RETX_PER_SECOND / 1000.0);
+            for (int i = 0; i < n; i++) {
+                long q = b.getLong();
+                Buf buf = st.ring.get(q);
+                if (buf == null || tok < 1) continue;
+                MediaHeader h = MediaHeader.decode(buf.packet());
+                if (h.layer() > childLayer) continue;
+                if (net.sendMedia(from, buf.packet())) {
+                    tok -= 1;
+                    retransSent++;
+                    retransBytesSent += buf.packet().length;
+                }
+            }
+            st.childTokens.put(from, tok);
+            st.childTokenAt.put(from, now);
+        } catch (RuntimeException e) {
+            malformed++;
+        }
     }
 
     private void forwardToChildren(Stream s, Stripe st, MediaHeader h, byte[] packet) {
         boolean manifest = h.kind() == MediaHeader.Kind.MANIFEST;
         for (Map.Entry<ParticipantId, Integer> c : st.children.entrySet()) {
             if (manifest || c.getValue() >= h.layer()) {
-                if (net.sendMedia(c.getKey(), packet)) s.forwarded++;
+                if (net.sendMedia(c.getKey(), packet)) { s.forwarded++; mediaBytesSent += packet.length; }
             }
         }
     }
