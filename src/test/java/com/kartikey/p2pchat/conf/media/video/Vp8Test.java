@@ -119,6 +119,30 @@ class Vp8Test {
     }
 
     @Test
+    void oversizedFramesRejected() {
+        try (Vp8Decoder dec = new Vp8Decoder()) {
+            assertNull(dec.decode(new EncodedFrame(new byte[100], true, 0, 16383, 16383)));
+            assertNull(dec.decode(new EncodedFrame(new byte[3 * 1024 * 1024], true, 0, 320, 180)));
+        }
+    }
+
+    @Test
+    void interruptDuringEncodeThenCloseIsSafe() {
+        VideoFrame src = synth(1280, 720, 1);
+        for (int i = 0; i < 5; i++) {
+            Simulcast sc = new Simulcast(24);
+            Thread.currentThread().interrupt();
+            List<EncodedFrame> r = sc.encode(src, false);
+            assertTrue(Thread.interrupted(), "interrupt flag restored");
+            assertEquals(3, r.size());
+            assertNotNull(r.get(2));
+            Thread.currentThread().interrupt();
+            sc.close();
+            assertTrue(Thread.interrupted());
+        }
+    }
+
+    @Test
     void closeTwiceIsSafe() {
         Vp8Encoder enc = new Vp8Encoder(320, 180, 100_000, 24);
         Vp8Decoder dec = new Vp8Decoder();
