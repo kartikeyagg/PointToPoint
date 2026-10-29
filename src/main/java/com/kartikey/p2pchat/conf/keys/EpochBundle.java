@@ -27,6 +27,7 @@ public final class EpochBundle {
     public static final int WRAPPED_LEN = Crypto.KEY_LEN + Crypto.TAG_LEN;
     public static final int MAX_ENTRIES = 65535;
     private static final int EPH_LEN = 44;
+    private static final byte[] DOMAIN = "p2p-conf/v1 epoch-bundle".getBytes(StandardCharsets.UTF_8);
     private static final byte[] INFO = "p2p-conf/v1 epoch wrap".getBytes(StandardCharsets.UTF_8);
     /** Fixed nonce: safe because each wrap key is unique per recipient per bundle (fresh ephemeral key). */
     private static final byte[] ZERO_NONCE = new byte[Crypto.NONCE_LEN];
@@ -96,15 +97,16 @@ public final class EpochBundle {
                 entries.add(new Entry(fingerprint(r), Crypto.seal(k, ZERO_NONCE, aad(meetingId, epoch), epochKey)));
             }
             byte[] body = body(meetingId, epoch, admin.id(), now, s, shards, ephPub, entries);
-            out.add(new EpochBundle(meetingId, epoch, admin.id(), now, s, shards, ephPub, entries, admin.sign(body)));
+            out.add(new EpochBundle(meetingId, epoch, admin.id(), now, s, shards, ephPub, entries,
+                    admin.sign(signed(body))));
         }
         return out;
     }
 
     /** True if the issuer's signature covers exactly this content. Says nothing about admin status. */
     public boolean verify() {
-        return issuer.verify(body(meetingId, epoch, issuer, issuedAtMillis, shardIndex, shardCount, ephemeralPublic,
-                entries), signature);
+        return issuer.verify(signed(body(meetingId, epoch, issuer, issuedAtMillis, shardIndex, shardCount,
+                ephemeralPublic, entries)), signature);
     }
 
     /** The epoch key, or empty if there is no entry for me or it fails authentication. */
@@ -170,6 +172,11 @@ public final class EpochBundle {
             b.put(e.fingerprint()).put(e.wrapped());
         }
         return b.array();
+    }
+
+    /** Domain-separates the signature so it cannot be replayed as any other signed message. */
+    private static byte[] signed(byte[] body) {
+        return ByteBuffer.allocate(DOMAIN.length + body.length).put(DOMAIN).put(body).array();
     }
 
     private static byte[] aad(byte[] meetingId, long epoch) {
