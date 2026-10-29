@@ -1,19 +1,39 @@
-# Conference mode (work in progress)
+# Conference mode
 
 Large private meetings (target: 100 000 participants) with no central server. The host's own
 computer is the admin authority, but it does **not** carry the media: participants relay for
 each other, and nobody who relays can read or alter what they forward unnoticed.
 
-Status: **phase 2 of 3** — the security and control core, the relay overlay and its simulator,
-audio selection/mixing, and the media stack (Opus, VP8 simulcast, capture devices, packetizing,
-jitter buffer) exist as tested libraries under `src/main/java/com/kartikey/p2pchat/conf/`.
-They are not wired to the network or the UI yet.
+Status: **runnable** — host and join meetings over real UDP with audio, chat and all admin
+controls, in a window or in the terminal. Camera/screen *sending* is the main piece still to wire
+up; see **[REMAINING.md](REMAINING.md)** for everything left.
+
+## Quick start
+
+```bash
+./conference.sh                                   # launcher window: host a meeting or paste an invite
+./conference.sh host "Team sync" --name Alice     # host; prints the invite code
+./conference.sh join <invite-code> --name Bob     # join
+# add --cli for the terminal version, --port <n> for a second instance on the same machine
+```
+
+The host prints an invite code (`p2pc1:…`). Anyone with it can ask to join **while an admin is
+online**. Default UDP port **7302**; let it through your firewall. Your identity is kept in
+`~/.p2p-conference/identity` (`identity-<port>` for extra instances).
+
+| In the window | In the terminal (`--cli`) |
+|---|---|
+| Mic / Camera / Share screen toggles, Chat, Participants, Leave | type to chat, `/mic on`, `/mic off`, `/quit` |
+| Participants panel → right-click a person (admins): allow/deny speaking or camera, make admin, make host, kick | `/people`, then `/allow <n>`, `/deny <n>`, `/admin <n>`, `/kick <n>` |
+| Admin bar: open everyone's mic for N seconds, close mics, end meeting | `/openmic <seconds>`, `/closemic`, `/end` |
+| "Choose tiles": which 10 people's video to show | — |
+| Status bar: peers, RTT, loss, up/down rate, tampered packets, audio delay, "admins offline" | `/invite` prints a fresh invite (admins) |
 
 | Phase | Contents | State |
 |---|---|---|
 | 1 | identities, signed admin policy, epoch keys, signed media packets, striped relay trees + simulator, loudest-speaker selection, crowd mixing | done (this doc) |
 | 2 | media: Opus audio, camera + VP8 simulcast (FFmpeg via JavaCPP), screen share, packetizing, jitter buffer | done |
-| 3 | networking node: one UDP socket for many peers, peer discovery (Kademlia), NAT help through members, Swing UI | planned |
+| 3 | UDP network (authenticated sessions, reliable control, hole punching, member relay), gossip membership, relay-tree runtime with repair + NACK recovery, node integration, Swing window, CLI | done (camera sending: see REMAINING.md) |
 
 ## Roles and rules
 
@@ -114,6 +134,30 @@ network (loss, 30–90 ms jitter, reordering) and asserts how much gets through:
 Manifests overlap (each covers the last 16 packets, one sent every 8), so a lost manifest costs
 nothing. The price is about 43 bytes per packet: ~45% on top of 24 kbps Opus audio, ~4% on video.
 
+## Phase 3: running a meeting
+
+| Package | What it does |
+|---|---|
+| `conf.net` | `UdpPeerNetwork`: one UDP socket for all peers; SIGMA handshake (Ed25519 identities, X25519 forward secrecy), AES-GCM sessions, reliable ordered control (RFC 6298 RTO, SACK), hole punching, relay through a member; `MemoryFabric` for deterministic tests |
+| `conf.node.gossip` | HyParView partial views, eager-push gossip with IHAVE/IWANT repair, policy and key anti-entropy |
+| `conf.node.tree` | per-stream tree coordinator (run by the stream's own sender), forwarder with repair and hop-by-hop NACK recovery, crowd-mode mixing |
+| `conf.node` | `ConferenceNode` ties it all together: invite → join request → admin's ticket + key → gossip → presence, rosters, rotating keys, speaker trees, crowd mode, kicks |
+| `conf.app` | `ConferenceApp` (CLI/launcher), `NodeRunner` (the node's single thread), `IdentityStore`, `AudioDeviceMediaIO` (mic, speaker, Opus) |
+| `conf.ui` | `ConferenceWindow`, `LauncherDialog` |
+
+Measured in tests:
+
+| Test | Result |
+|---|---|
+| `MeetingSimulationTest`: 41 nodes, invite joins | every node sees all 41 participants |
+| same, speaker → 40 listeners at 3% loss | worst listener heard 95.6% of frames (NACK recovery on every hop) |
+| crowd mode, 20 open mics | all 18 silent listeners hear the crowd mix |
+| kick | kicked node is told and leaves; everyone else gets a new key it lacks |
+| host crashes | speaker still heard by everyone; nobody new can join |
+| tree runtime, 400 nodes | worst node 99.2% at 2% loss, 98.4% at 5% loss (3–7% overhead); relay crash recovery ≈ 160 ms |
+| `UdpPeerNetwork` on loopback | ~130k packets/s of 1000 B; control round trip ≈ 0.1 ms |
+| two real processes (host + joiner, `--cli`) | join, chat both ways, participant list, leave, end |
+
 ## Try it
 
 ```bash
@@ -152,4 +196,4 @@ except the tampered one (which is counted).
   legitimate command still in flight at that moment is dropped (safety over liveness).
 - Epoch keys are wrapped per member (6.4 MB per rotation at 100k); an MLS tree (RFC 9420) would
   cut that, and is the planned upgrade.
-- The conference node will listen on UDP **7302** by default (phase 3).
+- The conference node listens on UDP **7302** by default.

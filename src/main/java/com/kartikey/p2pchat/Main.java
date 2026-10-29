@@ -26,6 +26,9 @@ public final class Main {
         if (o.whoami) {
             System.exit(ConsoleChat.whoami(o.localPort));
         }
+        if (o.conference != null) {
+            System.exit(com.kartikey.p2pchat.conf.app.ConferenceApp.run(o));
+        }
         if (o.webPort >= 0) {
             System.exit(WebApp.run(o));
         }
