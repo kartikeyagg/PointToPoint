@@ -36,11 +36,25 @@ public final class MediaSender {
     private final StreamSigner signer;
     private final Map<Long, GroupCipher> ciphers = new HashMap<>();
     private final int[] frameIds = new int[3];
+    private final int stripes;
     private long seq;
     private long dropped;
 
     public MediaSender(Identity me, int track, MediaHeader.Kind kind, LongSupplier epochSupplier,
                        Function<Long, Optional<byte[]>> keyForEpoch, Consumer<byte[]> out) {
+        this(me, track, kind, 1, epochSupplier, keyForEpoch, out);
+    }
+
+    /**
+     * @param stripes how many relay trees carry the stream: packet {@code seq} goes on stripe
+     *                {@code seq % stripes}, so each tree carries an equal share
+     */
+    public MediaSender(Identity me, int track, MediaHeader.Kind kind, int stripes, LongSupplier epochSupplier,
+                       Function<Long, Optional<byte[]>> keyForEpoch, Consumer<byte[]> out) {
+        if (stripes < 1 || stripes > 255) {
+            throw new IllegalArgumentException("stripes out of range: " + stripes);
+        }
+        this.stripes = stripes;
         this.kind = kind;
         this.streamId = StreamIds.of(me.id(), track);
         this.epochSupplier = epochSupplier;
@@ -73,7 +87,8 @@ public final class MediaSender {
             cipher = new GroupCipher(key.get());
             ciphers.put(epoch, cipher);
         }
-        MediaHeader h = new MediaHeader(kind, streamId, (int) epoch, seq++, layer, 0, level, flags, session);
+        int stripe = (int) (seq % stripes);
+        MediaHeader h = new MediaHeader(kind, streamId, (int) epoch, seq++, layer, stripe, level, flags, session);
         for (byte[] p : signer.onSend(cipher.seal(h, payload))) out.accept(p);
     }
 
