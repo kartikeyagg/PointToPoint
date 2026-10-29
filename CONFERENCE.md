@@ -4,14 +4,15 @@ Large private meetings (target: 100 000 participants) with no central server. Th
 computer is the admin authority, but it does **not** carry the media: participants relay for
 each other, and nobody who relays can read or alter what they forward unnoticed.
 
-Status: **phase 1 of 3** — the security and control core, the relay overlay and its simulator,
-and audio selection/mixing exist as tested libraries under
-`src/main/java/com/kartikey/p2pchat/conf/`. They are not wired to the network or the UI yet.
+Status: **phase 2 of 3** — the security and control core, the relay overlay and its simulator,
+audio selection/mixing, and the media stack (Opus, VP8 simulcast, capture devices, packetizing,
+jitter buffer) exist as tested libraries under `src/main/java/com/kartikey/p2pchat/conf/`.
+They are not wired to the network or the UI yet.
 
 | Phase | Contents | State |
 |---|---|---|
 | 1 | identities, signed admin policy, epoch keys, signed media packets, striped relay trees + simulator, loudest-speaker selection, crowd mixing | done (this doc) |
-| 2 | media: Opus audio, camera + H.264/VP8 simulcast (JavaCV/FFmpeg), screen share reuse | planned |
+| 2 | media: Opus audio, camera + VP8 simulcast (FFmpeg via JavaCPP), screen share, packetizing, jitter buffer | done |
 | 3 | networking node: one UDP socket for many peers, peer discovery (Kademlia), NAT help through members, Swing UI | planned |
 
 ## Roles and rules
@@ -79,13 +80,39 @@ churns a 100 000-node forest in memory (see "Try it").
   injected sound can be traced and the mixer muted. Expect about 1 s of delay, so chants work
   but singing in unison won't line up.
 
-## Codecs (phase 2)
+## Media (phase 2, `conf.media`)
 
-| Media | Codec | Bitrate |
-|---|---|---|
-| Audio | Opus, 20 ms frames, DTX (silence costs nothing) | 16–32 kbps |
-| Camera | H.264 (hardware) or VP8, 3 simulcast layers | ~150 kbps thumbnail … 1.5 Mbps HD |
-| Screen | existing JPEG tiles, later H.264 | varies |
+| Media | Codec | Bitrate | Measured (Apple Silicon laptop) |
+|---|---|---|---|
+| Audio | Opus 20 ms, in-band FEC, DTX | ~22 kbps (silence ≈ 8 B/frame) | ~0.7 ms encode+decode per frame |
+| Camera | VP8 real-time, 3 simulcast layers 180p/360p/720p | 150 k / 500 k / 1.5 Mbps budgets | all 3 layers ≈ 5.5–8 ms per frame; 720p decode ≈ 1.6 ms |
+| Screen | VP8 from the existing native/Robot capture | as camera | — |
+
+Why VP8 rather than H.264: it is royalty-free and the bundled FFmpeg has it on every platform
+(libx264 isn't bundled, and hardware H.264 differs per OS). Layers nobody watches are switched
+off so they cost no CPU.
+
+| Package | What it does |
+|---|---|
+| `media.audio` | `OpusEncoder` / `OpusDecoder` (lost packet → concealment) |
+| `media.video` | `Vp8Encoder` / `Vp8Decoder`, `Simulcast` (per-layer enable, keyframe requests) |
+| `media.device` | `MicCapture`, `SpeakerPlayback` (javax.sound), `CameraCapture` (avfoundation / v4l2 / dshow), `ScreenCapture` |
+| `media.pipeline` | `MediaSender` (fragment → encrypt → sign), `MediaReceiver` (verify → decrypt → reassemble), `AudioJitterBuffer` (adaptive 40–200 ms) |
+
+FFmpeg comes from Maven (`org.bytedeco:ffmpeg`). A normal build downloads only the natives for
+the machine it runs on (≈20 MB in `target/lib`); `mvn package -Pall-platforms` builds one
+`target/lib` that runs on macOS, Linux and Windows.
+
+`MediaReliabilityTest` pushes real Opus and VP8 through the pipeline over a simulated bad
+network (loss, 30–90 ms jitter, reordering) and asserts how much gets through:
+
+| Link | Result |
+|---|---|
+| audio, 10% random loss | 90.3% of frames played, the rest concealed (no added loss from signing) |
+| 360p video, 3% loss, keyframe requests | 88.8% of frames shown |
+
+Manifests overlap (each covers the last 16 packets, one sent every 8), so a lost manifest costs
+nothing. The price is about 43 bytes per packet: ~45% on top of 24 kbps Opus audio, ~4% on video.
 
 ## Try it
 
@@ -114,6 +141,15 @@ except the tampered one (which is counted).
 - Latency grows with tree depth: about 300–600 ms speaker-to-audience at 100k.
 - Repair after churn hangs orphaned subtrees under the shallowest free slot, so depth creeps up
   (5 → 9 after 5% churn); a periodic rebalance is still to do.
+- Opus concealment of a lost packet is a fading repeat: FFmpeg's API can't call libopus' own
+  concealment. A direct libopus binding would sound better on lossy links.
+- Camera capture is implemented for all three OSes but has only been unit-tested without a real
+  camera so far.
+- Media sessions are numbered by the sender's clock. If that clock jumps backwards across a
+  restart, receivers drop the restarted stream until they reconnect to that sender (keys and
+  nonces still never repeat).
+- A revocation or kick freezes the target's admin commands to the ones the revoker had seen; a
+  legitimate command still in flight at that moment is dropped (safety over liveness).
 - Epoch keys are wrapped per member (6.4 MB per rotation at 100k); an MLS tree (RFC 9420) would
   cut that, and is the planned upgrade.
 - The conference node will listen on UDP **7302** by default (phase 3).

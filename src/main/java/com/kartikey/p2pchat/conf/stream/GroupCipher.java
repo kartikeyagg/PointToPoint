@@ -22,16 +22,19 @@ public final class GroupCipher {
     private static final byte[] INFO = "p2p-conf/v1 stream".getBytes(StandardCharsets.US_ASCII);
 
     private final byte[] epochKey;
-    private final ConcurrentHashMap<Long, byte[]> keys = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<StreamKey, byte[]> keys = new ConcurrentHashMap<>();
+
+    private record StreamKey(long streamId, long session) {}
 
     public GroupCipher(byte[] epochKey) {
         if (epochKey == null || epochKey.length == 0) throw new IllegalArgumentException("epochKey");
         this.epochKey = epochKey.clone();
     }
 
-    private byte[] streamKey(long streamId) {
-        return keys.computeIfAbsent(streamId, id ->
-                Crypto.hkdf(epochKey, ByteBuffer.allocate(8).putLong(id).array(), INFO, Crypto.KEY_LEN));
+    /** Key per (stream, session): a restarted sender restarts seq at 0 but gets a fresh key. */
+    private byte[] streamKey(long streamId, long session) {
+        return keys.computeIfAbsent(new StreamKey(streamId, session), k -> Crypto.hkdf(epochKey,
+                ByteBuffer.allocate(16).putLong(k.streamId()).putLong(k.session()).array(), INFO, Crypto.KEY_LEN));
     }
 
     static byte[] nonce(MediaHeader h) {
@@ -44,7 +47,7 @@ public final class GroupCipher {
     public byte[] seal(MediaHeader h, byte[] payload) {
         if (h.kind() == MediaHeader.Kind.MANIFEST) throw new IllegalArgumentException("manifests are not sealed");
         byte[] hdr = h.encode();
-        byte[] ct = Crypto.seal(streamKey(h.streamId()), nonce(h), hdr, payload);
+        byte[] ct = Crypto.seal(streamKey(h.streamId(), h.session()), nonce(h), hdr, payload);
         byte[] out = new byte[hdr.length + ct.length];
         System.arraycopy(hdr, 0, out, 0, hdr.length);
         System.arraycopy(ct, 0, out, hdr.length, ct.length);
@@ -59,6 +62,6 @@ public final class GroupCipher {
         if (h.kind() == MediaHeader.Kind.MANIFEST) throw new IllegalArgumentException("not a media packet");
         byte[] hdr = Arrays.copyOfRange(packet, 0, MediaHeader.LENGTH);
         byte[] ct = Arrays.copyOfRange(packet, MediaHeader.LENGTH, packet.length);
-        return Crypto.open(streamKey(h.streamId()), nonce(h), hdr, ct);
+        return Crypto.open(streamKey(h.streamId(), h.session()), nonce(h), hdr, ct);
     }
 }
