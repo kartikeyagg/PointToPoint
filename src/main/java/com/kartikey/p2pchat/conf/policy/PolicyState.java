@@ -6,10 +6,12 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -24,9 +26,15 @@ import java.util.TreeSet;
  */
 public final class PolicyState {
 
-    public enum AddResult { ADDED, DUPLICATE, BAD_SIGNATURE, WRONG_MEETING }
+    /** REJECTED: lamport not positive or implausibly far ahead of the effective history. */
+    public enum AddResult { ADDED, DUPLICATE, BAD_SIGNATURE, WRONG_MEETING, REJECTED }
 
-    private record Entry(AdminCommand cmd, byte[] id) { }
+    /** A lamport this far beyond the highest effective one is treated as an attack, not a clock. */
+    public static final long MAX_LAMPORT_JUMP = 1_000_000;
+    public static final int MAX_JUNK_PER_ISSUER = 64;
+    public static final int MAX_JUNK_TOTAL = 4096;
+
+    private record Entry(String key, AdminCommand cmd, byte[] id, long seq) { }
 
     private static final Comparator<Entry> REPLAY_ORDER = Comparator
             .<Entry>comparingLong(e -> e.cmd().lamport())
@@ -35,7 +43,8 @@ public final class PolicyState {
 
     private final MeetingGenesis genesis;
     private final Map<String, Entry> entries = new HashMap<>();
-    private long maxLamport;
+    private long seq;
+    private long effectiveMaxHint;
     private Derived derived;
 
     public PolicyState(MeetingGenesis genesis) {
@@ -54,6 +63,9 @@ public final class PolicyState {
         if (!genesis.sameMeeting(c.meetingId())) {
             return AddResult.WRONG_MEETING;
         }
+        if (c.lamport() <= 0) {
+            return AddResult.REJECTED;
+        }
         byte[] id = c.id();
         String key = HexFormat.of().formatHex(id);
         if (entries.containsKey(key)) {
@@ -62,8 +74,13 @@ public final class PolicyState {
         if (!c.verify()) {
             return AddResult.BAD_SIGNATURE;
         }
-        entries.put(key, new Entry(c, id));
-        maxLamport = Math.max(maxLamport, c.lamport());
+        if (c.lamport() - effectiveMaxHint > MAX_LAMPORT_JUMP) {
+            d();
+            if (c.lamport() - effectiveMaxHint > MAX_LAMPORT_JUMP) {
+                return AddResult.REJECTED;
+            }
+        }
+        entries.put(key, new Entry(key, c, id, seq++));
         derived = null;
         return AddResult.ADDED;
     }
@@ -73,16 +90,84 @@ public final class PolicyState {
             List<Entry> sorted = new ArrayList<>(entries.values());
             sorted.sort(REPLAY_ORDER);
             derived = replay(sorted);
+            effectiveMaxHint = derived.maxEffective;
+            evictJunk(sorted, derived);
         }
         return derived;
     }
 
+    /**
+     * Replays in order; when an effective revocation voids commands its target signed below the
+     * revocation's lamport (and outside the frozen set), the replay restarts without them. The void
+     * set only grows, so this ends, and it depends only on the set of commands.
+     */
     private Derived replay(List<Entry> sorted) {
-        Derived s = new Derived(genesis.host(), genesis.cameraAllowedByDefault());
+        Map<ParticipantId, List<Entry>> byIssuer = new HashMap<>();
         for (Entry e : sorted) {
-            s.apply(e.cmd());
+            byIssuer.computeIfAbsent(e.cmd().issuer(), k -> new ArrayList<>()).add(e);
         }
-        return s;
+        Set<Entry> voided = Collections.newSetFromMap(new IdentityHashMap<>());
+        while (true) {
+            Derived s = new Derived(genesis.host(), genesis.cameraAllowedByDefault(), byIssuer, voided);
+            for (Entry e : sorted) {
+                if (!voided.contains(e)) {
+                    s.apply(e);
+                }
+            }
+            if (s.newVoids.isEmpty()) {
+                return s;
+            }
+            voided.addAll(s.newVoids);
+        }
+    }
+
+    /**
+     * Commands that never took effect (issuer not an admin yet, unauthorized, or voided) are kept
+     * only in a bounded pool, newest first, so junk cannot grow memory or replay cost; a pending
+     * command whose issuer is granted later is re-evaluated by the next replay while it is in the pool.
+     */
+    private void evictJunk(List<Entry> sorted, Derived s) {
+        List<Entry> junk = new ArrayList<>();
+        for (Entry e : sorted) {
+            if (!s.effective.contains(e)) {
+                junk.add(e);
+            }
+        }
+        if (junk.size() <= MAX_JUNK_PER_ISSUER) {
+            return;
+        }
+        junk.sort(Comparator.comparingLong(Entry::seq).reversed());
+        Map<ParticipantId, Integer> perIssuer = new HashMap<>();
+        int kept = 0;
+        for (Entry e : junk) {
+            int n = perIssuer.merge(e.cmd().issuer(), 1, Integer::sum);
+            if (n > MAX_JUNK_PER_ISSUER || kept >= MAX_JUNK_TOTAL) {
+                entries.remove(e.key());
+            } else {
+                kept++;
+            }
+        }
+    }
+
+    /**
+     * Ids of up to {@value AdminCommand#MAX_FROZEN} effective commands by {@code target} (newest
+     * first): what a revoker passes to {@link AdminCommand#sign} so those survive the revocation.
+     * Trade-off: a legitimate command the revoker has not yet seen is dropped (safety over liveness).
+     */
+    public synchronized List<byte[]> frozenFor(ParticipantId target) {
+        Derived s = d();
+        List<Entry> mine = new ArrayList<>();
+        for (Entry e : entries.values()) {
+            if (e.cmd().issuer().equals(target) && s.effective.contains(e)) {
+                mine.add(e);
+            }
+        }
+        mine.sort(Comparator.comparingLong((Entry e) -> e.cmd().lamport()).reversed());
+        List<byte[]> out = new ArrayList<>();
+        for (Entry e : mine.subList(0, Math.min(mine.size(), AdminCommand.MAX_FROZEN))) {
+            out.add(e.id());
+        }
+        return out;
     }
 
     public synchronized ParticipantId host() {
@@ -133,9 +218,9 @@ public final class PolicyState {
         return d().ended;
     }
 
-    /** Clock value for the next command this node issues: above everything seen so far. */
+    /** Clock value for the next command this node issues: above every effective command (junk cannot inflate it). */
     public synchronized long nextLamport() {
-        return maxLamport + 1;
+        return d().maxEffective + 1;
     }
 
     /** SHA-256 over the sorted command ids; peers compare it to learn whether they need to sync. */
@@ -178,40 +263,62 @@ public final class PolicyState {
     private static final class Derived {
         ParticipantId host;
         final boolean cameraDefault;
+        final Map<ParticipantId, List<Entry>> byIssuer;
+        final Set<Entry> voided;
+        final Set<Entry> newVoids = Collections.newSetFromMap(new IdentityHashMap<>());
+        final Set<Entry> effective = Collections.newSetFromMap(new IdentityHashMap<>());
         final Set<ParticipantId> admins = new HashSet<>();
+        final Map<ParticipantId, Long> adminSince = new HashMap<>();
         final Set<ParticipantId> kicked = new HashSet<>();
         final Map<ParticipantId, Boolean> speak = new HashMap<>();
         final Map<ParticipantId, Boolean> camera = new HashMap<>();
         long openMicUntil;
+        long maxEffective;
         boolean ended;
 
-        Derived(ParticipantId host, boolean cameraDefault) {
+        Derived(ParticipantId host, boolean cameraDefault, Map<ParticipantId, List<Entry>> byIssuer,
+                Set<Entry> voided) {
             this.host = host;
             this.cameraDefault = cameraDefault;
+            this.byIssuer = byIssuer;
+            this.voided = voided;
             admins.add(host);
         }
 
-        void apply(AdminCommand c) {
+        void apply(Entry e) {
+            AdminCommand c = e.cmd();
             ParticipantId who = c.issuer(), t = c.target();
             if (ended || !admins.contains(who)) {
                 return;
             }
             boolean isHost = who.equals(host);
+            if (!isHost && c.lamport() <= adminSince.getOrDefault(who, 0L)) {
+                return;
+            }
+            boolean ok = true;
             switch (c.kind()) {
                 case GRANT_ADMIN -> {
-                    if (!kicked.contains(t)) {
-                        admins.add(t);
+                    if (kicked.contains(t)) {
+                        ok = false;
+                    } else if (admins.add(t)) {
+                        adminSince.put(t, c.lamport());
                     }
                 }
                 case REVOKE_ADMIN -> {
                     if (isHost && !t.equals(host)) {
-                        admins.remove(t);
+                        revoke(t, c);
+                    } else {
+                        ok = false;
                     }
                 }
                 case TRANSFER_HOST -> {
                     if (isHost && !kicked.contains(t)) {
                         admins.add(t);
+                        adminSince.put(host, c.lamport());
+                        adminSince.remove(t);
                         host = t;
+                    } else {
+                        ok = false;
                     }
                 }
                 case ALLOW_SPEAK -> speak.put(t, true);
@@ -222,12 +329,35 @@ public final class PolicyState {
                 case DENY_CAMERA -> camera.put(t, false);
                 case KICK -> {
                     if (!t.equals(host) && (isHost || !admins.contains(t))) {
+                        revoke(t, c);
                         kicked.add(t);
-                        admins.remove(t);
+                    } else {
+                        ok = false;
                     }
                 }
                 case END_MEETING -> ended = true;
             }
+            if (ok) {
+                effective.add(e);
+                maxEffective = Math.max(maxEffective, c.lamport());
+            }
+        }
+
+        /** Removes {@code t}'s admin rights and voids what it signed since its grant that the revoker did not accept. */
+        private void revoke(ParticipantId t, AdminCommand c) {
+            if (admins.contains(t)) {
+                Set<String> frozen = new HashSet<>();
+                c.frozen().forEach(id -> frozen.add(HexFormat.of().formatHex(id)));
+                long since = adminSince.getOrDefault(t, 0L);
+                for (Entry y : byIssuer.getOrDefault(t, List.of())) {
+                    long l = y.cmd().lamport();
+                    if (l > since && l < c.lamport() && !frozen.contains(y.key()) && !voided.contains(y)) {
+                        newVoids.add(y);
+                    }
+                }
+            }
+            admins.remove(t);
+            adminSince.remove(t);
         }
     }
 }

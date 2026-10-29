@@ -176,7 +176,7 @@ class PolicyStateTest {
     @Test
     void tamperedEncodingIsBadSignature() {
         byte[] enc = cmd(host, ALLOW_SPEAK, u, 0, 1).encode();
-        enc[16 + ParticipantId.ENCODED_LEN + 7] ^= 1;
+        enc[16 + ParticipantId.ENCODED_LEN + 6] ^= 1;
         assertEquals(AddResult.BAD_SIGNATURE, st.add(AdminCommand.decode(enc)));
     }
 
@@ -206,7 +206,7 @@ class PolicyStateTest {
             Identity target = ids[rnd.nextInt(ids.length)];
             long until = NOW + rnd.nextInt(5000);
             all.add(cmd(issuer, k, k.name().matches("OPEN_MIC_ALL|CLOSE_MIC_ALL|END_MEETING") ? null : target,
-                    until, rnd.nextInt(12)));
+                    until, rnd.nextInt(12) + 1));
         }
         PolicyState ref = new PolicyState(genesis);
         all.forEach(ref::add);
@@ -285,5 +285,116 @@ class PolicyStateTest {
         assertTrue(JoinTicket.decode(t.encode()).verify());
         byte[] te = t.encode();
         assertThrows(IllegalArgumentException.class, () -> JoinTicket.decode(Arrays.copyOf(te, te.length - 1)));
+    }
+
+    @Test
+    void lamportOverflowAttackRejected() {
+        Identity outsider = Identity.generate();
+        assertEquals(AddResult.REJECTED, st.add(cmd(outsider, ALLOW_SPEAK, u, 0, Long.MAX_VALUE)));
+        assertEquals(AddResult.REJECTED, st.add(cmd(host, ALLOW_SPEAK, u, 0, 0)));
+        assertEquals(AddResult.REJECTED, st.add(cmd(host, ALLOW_SPEAK, u, 0, -5)));
+        assertEquals(AddResult.ADDED, st.add(cmd(outsider, ALLOW_SPEAK, u, 0, 1_000_000)));
+        assertEquals(1, st.nextLamport());
+        add(host, ALLOW_SPEAK, u, 3);
+        assertEquals(4, st.nextLamport());
+    }
+
+    @Test
+    void junkFloodIsBounded() {
+        for (int i = 0; i < 200; i++) {
+            st.add(cmd(Identity.generate(), ALLOW_SPEAK, u, 0, 1));
+        }
+        Identity one = Identity.generate();
+        for (int i = 0; i < 200; i++) {
+            st.add(cmd(one, DENY_SPEAK, u, 0, i + 1));
+        }
+        st.nextLamport();
+        assertTrue(st.commands().size() <= PolicyState.MAX_JUNK_TOTAL);
+        assertTrue(st.commands().stream().filter(c -> c.issuer().equals(one.id())).count()
+                <= PolicyState.MAX_JUNK_PER_ISSUER);
+    }
+
+    @Test
+    void backdatedCommandAfterKickIgnored() {
+        add(host, GRANT_ADMIN, a, 1);
+        add(host, KICK, a, 10);
+        add(a, GRANT_ADMIN, b, 5);
+        assertFalse(st.isAdmin(b.id()));
+        assertTrue(st.isKicked(a.id()));
+        PolicyState other = new PolicyState(genesis);
+        List<AdminCommand> all = new ArrayList<>(st.commands());
+        Collections.reverse(all);
+        all.forEach(other::add);
+        assertFalse(other.isAdmin(b.id()));
+    }
+
+    @Test
+    void backdatedCommandAfterRevokeIgnored() {
+        add(host, GRANT_ADMIN, a, 1);
+        add(host, REVOKE_ADMIN, a, 10);
+        add(a, KICK, u, 5);
+        assertFalse(st.isKicked(u.id()));
+    }
+
+    @Test
+    void frozenSetKeepsLateLegitCommand() {
+        add(host, GRANT_ADMIN, a, 1);
+        AdminCommand legit = cmd(a, KICK, u, 0, 5);
+        PolicyState revoker = new PolicyState(genesis);
+        revoker.add(st.commands().iterator().next());
+        revoker.add(legit);
+        AdminCommand revoke = AdminCommand.sign(host, genesis.meetingId(), REVOKE_ADMIN, a.id(), 0, 10, NOW,
+                revoker.frozenFor(a.id()));
+        assertEquals(1, revoke.frozen().size());
+        assertTrue(AdminCommand.decode(revoke.encode()).verify());
+        st.add(revoke);
+        assertFalse(st.isKicked(u.id()));
+        st.add(legit);
+        assertTrue(st.isKicked(u.id()));
+        assertFalse(st.isAdmin(a.id()));
+    }
+
+    @Test
+    void commandBeforeIssuersGrantConverges() {
+        AdminCommand grant = cmd(host, GRANT_ADMIN, a, 0, 1);
+        AdminCommand act = cmd(a, KICK, u, 0, 2);
+        st.add(act);
+        assertFalse(st.isKicked(u.id()));
+        st.add(grant);
+        assertTrue(st.isKicked(u.id()));
+        PolicyState other = new PolicyState(genesis);
+        other.add(grant);
+        other.add(act);
+        assertArrayEquals(st.digest(), other.digest());
+        assertTrue(other.isKicked(u.id()));
+    }
+
+    @Test
+    void regrantRequiresLaterLamport() {
+        add(host, GRANT_ADMIN, a, 1);
+        add(host, REVOKE_ADMIN, a, 5);
+        add(host, GRANT_ADMIN, a, 8);
+        add(a, KICK, u, 8);
+        add(a, KICK, b, 9);
+        assertFalse(st.isKicked(u.id()));
+        assertTrue(st.isKicked(b.id()));
+    }
+
+    @Test
+    void frozenSetWireBounds() {
+        List<byte[]> many = new ArrayList<>();
+        for (int i = 0; i <= AdminCommand.MAX_FROZEN; i++) {
+            many.add(new byte[32]);
+        }
+        assertThrows(IllegalArgumentException.class, () -> AdminCommand.sign(host, genesis.meetingId(), KICK,
+                u.id(), 0, 1, NOW, many));
+        assertThrows(IllegalArgumentException.class, () -> AdminCommand.sign(host, genesis.meetingId(),
+                ALLOW_SPEAK, u.id(), 0, 1, NOW, List.of(new byte[32])));
+        byte[] enc = AdminCommand.sign(host, genesis.meetingId(), KICK, u.id(), 0, 1, NOW,
+                List.of(new byte[32])).encode();
+        int countAt = enc.length - 64 - 32 - 2;
+        enc[countAt] = (byte) 0xff;
+        enc[countAt + 1] = (byte) 0xff;
+        assertThrows(IllegalArgumentException.class, () -> AdminCommand.decode(enc));
     }
 }
