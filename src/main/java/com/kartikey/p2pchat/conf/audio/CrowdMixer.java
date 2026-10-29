@@ -33,13 +33,13 @@ public final class CrowdMixer {
         if (frame.length != frameSamples) {
             throw new IllegalArgumentException("frame must have " + frameSamples + " samples");
         }
-        if (participants < 0) {
-            throw new IllegalArgumentException("negative participants");
+        if (participants < 1) {
+            throw new IllegalArgumentException("participants must be >= 1");
         }
         for (int i = 0; i < frameSamples; i++) {
             sum[i] += frame[i];
         }
-        this.participants += participants;
+        this.participants = (int) Math.min(Integer.MAX_VALUE, (long) this.participants + participants);
     }
 
     /** Returns the limited mix and total participant count, then resets for the next frame. */
