@@ -85,4 +85,45 @@ class FragmentTest {
         bad[6] = 0;
         assertThrows(IllegalArgumentException.class, () -> Fragment.decode(bad));
     }
+
+    @Test
+    void hostileFragmentsAreRejectedOrBounded() {
+        byte[] ok = Fragmenter.split(0, frame(10, true, 1)).get(0);
+        byte[] bigCount = ok.clone();
+        bigCount[6] = (byte) 0xFF;
+        bigCount[7] = (byte) 0xFF;
+        assertThrows(IllegalArgumentException.class, () -> Fragment.decode(bigCount));
+        for (int[] wh : new int[][] {{0, 720}, {1281, 720}, {9000, 720}, {1280, 5000}}) {
+            byte[] b = ok.clone();
+            b[9] = (byte) (wh[0] >> 8); b[10] = (byte) wh[0];
+            b[11] = (byte) (wh[1] >> 8); b[12] = (byte) wh[1];
+            assertThrows(IllegalArgumentException.class, () -> Fragment.decode(b));
+        }
+        // the attack: many frames, each announcing the largest legal count, one tiny fragment each
+        FrameAssembler a = new FrameAssembler(1000);
+        long max = 0;
+        for (int id = 0; id < 5000; id++) {
+            a.accept(new Fragment(id, 0, Fragment.MAX_COUNT, false, 640, 360, 0, new byte[Fragment.MAX_DATA]), 0);
+            max = Math.max(max, a.retainedBytes());
+        }
+        assertTrue(max <= 2L * MediaFormat.MAX_ENCODED_FRAME, "retained " + max);
+        assertTrue(a.needsKeyframe());
+    }
+
+    @Test
+    void fuzzedFragmentsNeverThrowOrOverflowBudget() {
+        Random r = new Random(9);
+        FrameAssembler a = new FrameAssembler(1000);
+        for (int i = 0; i < 20000; i++) {
+            byte[] b = new byte[r.nextInt(MediaFormat.MAX_FRAGMENT + 20)];
+            r.nextBytes(b);
+            if (b.length > 8 && r.nextBoolean()) { b[4] = 0; b[5] = (byte) r.nextInt(3); b[6] = 0; b[7] = (byte) (1 + r.nextInt(3)); }
+            try {
+                a.accept(Fragment.decode(b), i);
+            } catch (IllegalArgumentException expected) {
+                // malformed input is rejected, never anything else
+            }
+            assertTrue(a.retainedBytes() <= 2L * MediaFormat.MAX_ENCODED_FRAME);
+        }
+    }
 }
